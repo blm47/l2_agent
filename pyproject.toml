@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 capture = [
-    "bettercam>=1.0.0",
+    "bettercam==1.0.0",
 ]
 dev = [
     "pytest>=8.3,<9",
@@ -26,6 +26,12 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+
+[project.scripts]
+l2-agent = "l2_agent.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/l2_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
