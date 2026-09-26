@@ -17,6 +17,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pico = [
+    "pyserial>=3.5,<4",
+]
+perception = [
+    "rapidocr-onnxruntime>=1.4,<2",
+]
 capture = [
     "bettercam==1.0.0",
 ]

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
-from l2_agent.action_controller import KEY_SCAN_CODES, ActionController, Input
+from l2_agent.action_controller import KEY_SCAN_CODES, ActionController, Input, InputEnvironment
 from l2_agent.action_validator import ALLOWED_KEYS, ActionRequest
 from l2_agent.geometry import ClientRect
 from l2_agent.windows import WindowSnapshot
@@ -47,11 +47,61 @@ def setup_controller(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "key", ["WIN", "ALT", "CTRL", "SHIFT", "ALT+F4", "F10", "F12", "DELETE", "unknown"]
+    "key", ["WIN", "ALT", "CTRL", "SHIFT", "ALT+F4", "F10", "F12", "DELETE", "unknown", "\\"]
 )
 def test_unknown_and_shortcut_keys_rejected(key):
     with pytest.raises(ValidationError):
         ActionRequest(kind="key_down", key=key)
+
+
+@pytest.mark.parametrize("kind", ["key", "mouse"])
+def test_pico_routes_hold_and_stop_without_sendinput(setup_controller, kind):
+    controller, _environment, events = setup_controller
+    controller.pico = Mock()
+    controller.arm((42, 123))
+    controller.pico.arm.assert_called_once()
+    if kind == "key":
+        controller.key_down("W", 1000)
+        controller.pico.hold.assert_called_once_with("KEY", "W", 1000)
+    else:
+        controller.mouse_button_down("left", 1000)
+        controller.pico.hold.assert_called_once_with("BUTTON", "left", 1000)
+    controller.stop("EMERGENCY — F10")
+    controller.pico.release.assert_called_once()
+    controller.pico.stop.assert_called_once()
+    assert not events
+    assert not controller.armed
+
+
+def test_pico_still_requires_focus(setup_controller):
+    controller, environment, events = setup_controller
+    controller.pico = Mock()
+    environment.snapshot.return_value = environment.snapshot.return_value.model_copy(
+        update={"focused": False}
+    )
+    with pytest.raises(ValueError):
+        controller.key_down("W")
+    controller.pico.hold.assert_not_called()
+    assert not events
+
+
+def test_pico_timeout_never_falls_back_to_sendinput(setup_controller):
+    controller, _environment, events = setup_controller
+    controller.pico = Mock()
+    controller.pico.hold.side_effect = OSError("timeout")
+    with pytest.raises(OSError):
+        controller.key_down("W")
+    assert not controller.armed
+    assert not events
+
+
+def test_pico_heartbeat_failure_stops_controller(setup_controller):
+    controller, _environment, _events = setup_controller
+    pico = Mock()
+    pico.heartbeat.side_effect = OSError("disconnected")
+    controller.pico = pico
+    wait_for(lambda: not controller.armed)
+    assert controller.state.startswith("EMERGENCY")
 
 
 @pytest.mark.parametrize("duration", [0, -1, 1001, 100.0, True])
@@ -62,6 +112,47 @@ def test_duration_is_bounded(duration):
 
 def test_input_struct_matches_windows_abi():
     assert ctypes.sizeof(Input) == (40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28)
+
+
+@pytest.mark.parametrize("kind", ["key", "mouse"])
+def test_slow_validation_does_not_shorten_hold(setup_controller, monkeypatch, kind):
+    controller, environment, events = setup_controller
+    controller._shutdown.set()
+    controller._watchdog.join(timeout=1)
+    clock = [100.0]
+    monkeypatch.setattr("l2_agent.action_controller.time.monotonic", lambda: clock[0])
+    controller._last_action = 0.0
+    snapshot = environment.snapshot.return_value
+
+    def delayed_snapshot(target):
+        clock[0] += 0.2
+        return snapshot
+
+    environment.snapshot.side_effect = delayed_snapshot
+    if kind == "key":
+        controller.key_down("1", 100)
+        deadline = controller._keys["1"][0]
+    else:
+        controller.mouse_button_down("left", 100)
+        deadline = controller._buttons["left"][0]
+    assert len(events) == 1
+    assert deadline - clock[0] == pytest.approx(0.1)
+    controller.release_all()
+    assert len(events) == 2
+    assert not controller._hold_started
+
+
+@pytest.mark.parametrize(
+    "key,scan", [("1", 0x02), ("2", 0x03), ("3", 0x04), ("4", 0x05), ("R", 0x13)]
+)
+def test_short_key_scan_and_release(setup_controller, key, scan):
+    controller, _, events = setup_controller
+    controller.key_down(key, 100)
+    wait_for(lambda: len(events) == 2)
+    assert [(event.value.keyboard.scan, event.value.keyboard.flags) for event in events] == [
+        (scan, 0x08),
+        (scan, 0x0A),
+    ]
 
 
 def test_watchdog_releases_bounded_key(setup_controller):
@@ -299,3 +390,18 @@ def test_scan_code_down_and_stop_release_match_parsec_example(setup_controller, 
 def test_scan_code_table_covers_allowlist():
     assert KEY_SCAN_CODES.keys() == ALLOWED_KEYS.keys()
     assert len(set(KEY_SCAN_CODES.values())) == len(KEY_SCAN_CODES)
+
+
+@pytest.mark.parametrize(
+    "levels,blocked", [([8192, 12288], True), ([8192, 8192], False), ([12288, 8192], False)]
+)
+def test_input_integrity_check(monkeypatch, levels, blocked):
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("l2_agent.action_controller.process_integrity", Mock(side_effect=levels))
+    environment = InputEnvironment()
+    if blocked:
+        with pytest.raises(ValueError, match="выше права"):
+            environment.check_input_access(123)
+    else:
+        environment.check_input_access(123)

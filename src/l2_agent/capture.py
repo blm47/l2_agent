@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict
 
 from l2_agent.geometry import ClientRect
-from l2_agent.windows import ParsecWindowManager
+from l2_agent.windows import GameWindowManager
 
 logger = logging.getLogger("l2_agent.capture")
 
@@ -19,7 +19,9 @@ def monitor_region(client: ClientRect, monitor: ClientRect) -> tuple[int, int, i
         monitor.left <= client.left < client.right <= monitor.right
         and monitor.top <= client.top < client.bottom <= monitor.bottom
     ):
-        raise ValueError("Разместите клиентскую область Parsec целиком на одном мониторе")
+        raise ValueError(
+            "Разместите клиентскую область Lineage 2 / LU4 / Parsec целиком на одном мониторе"
+        )
     return (
         client.left - monitor.left,
         client.top - monitor.top,
@@ -81,7 +83,9 @@ class BetterCamBackend:
                     self.output_key = key
                     logger.info("Capture переключён на DXGI output %s", key)
                 return self.camera.grab(region=region)
-        raise ValueError("Разместите клиентскую область Parsec целиком на одном мониторе")
+        raise ValueError(
+            "Разместите клиентскую область Lineage 2 / LU4 / Parsec целиком на одном мониторе"
+        )
 
     def close(self) -> None:
         if self.camera is not None:
@@ -140,7 +144,7 @@ class CaptureWorker:
         sequence = 0
         generation_seen = -1
         frame_times: deque[float] = deque(maxlen=60)
-        manager = ParsecWindowManager()
+        manager = GameWindowManager()
         try:
             import comtypes
 
@@ -187,7 +191,7 @@ class CaptureWorker:
                     if rgb is not None:
                         if rgb.shape != (rect.height, rect.width, 3) or rgb.dtype != np.uint8:
                             raise ValueError(
-                                "Размер или формат кадра не совпадает с областью Parsec"
+                                "Размер или формат кадра не совпадает с областью Lineage 2 / LU4 / Parsec"
                             )
                         # Отдельный неизменяемый массив не зависит от памяти backend.
                         rgb = np.array(rgb, copy=True, order="C")
@@ -200,7 +204,9 @@ class CaptureWorker:
                     self._publish(
                         generation,
                         CaptureStatus(
-                            message="Захват Parsec" if frame is not None else "Ожидание кадра",
+                            message="Захват Lineage 2 / LU4 / Parsec"
+                            if frame is not None
+                            else "Ожидание кадра",
                             fps=float(len(frame_times)),
                             frame=frame,
                         ),

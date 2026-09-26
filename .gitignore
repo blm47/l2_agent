@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-train/
+Ultralytics/
 .python/
 venv/
 .pytest_cache/
@@ -32,6 +34,8 @@ artifacts/
 # Local config
 .env
 config.local.yaml
+config/roi.local.json
+config/roi.local.json.tmp
 
 # ML
 runs/

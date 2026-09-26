@@ -1,5 +1,6 @@
 import ctypes
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -7,14 +8,32 @@ from ctypes import wintypes
 
 import win32api
 import win32gui
+import win32security
 
 from l2_agent.action_validator import ALLOWED_KEYS, MOUSE_BUTTONS, ActionRequest, ActionValidator
 from l2_agent.geometry import ClientRect, NormalizedPoint
-from l2_agent.windows import ParsecWindowManager, WindowSnapshot
+from l2_agent.pico import PicoTransport
+from l2_agent.windows import GameWindowManager, WindowSnapshot
 
 logger = logging.getLogger("l2_agent.action_controller")
 
-# Физические позиции клавиш US QWERTY, как в рабочем примере для Parsec.
+
+def process_integrity(pid: int) -> int:
+    process = win32api.OpenProcess(0x1000, False, pid)
+    try:
+        token = win32security.OpenProcessToken(process, 0x0008)
+        try:
+            sid, _attributes = win32security.GetTokenInformation(
+                token, win32security.TokenIntegrityLevel
+            )
+            return int(sid.GetSubAuthority(sid.GetSubAuthorityCount() - 1))
+        finally:
+            token.Close()
+    finally:
+        process.Close()
+
+
+# Физические позиции клавиш US QWERTY, как в рабочем примере для Lineage 2 / LU4 / Parsec.
 # Все разрешённые здесь клавиши имеют обычный scan code без префикса E0.
 KEY_SCAN_CODES = {
     "W": 0x11,
@@ -65,7 +84,17 @@ class Input(ctypes.Structure):
 
 class InputEnvironment:
     def __init__(self) -> None:
-        self.manager = ParsecWindowManager()
+        self.manager = GameWindowManager()
+
+    def check_input_access(self, pid: int) -> None:
+        own_level = process_integrity(os.getpid())
+        target_level = process_integrity(pid)
+        logger.info("Уровни целостности Windows: агент=%s, цель=%s", own_level, target_level)
+        if target_level > own_level:
+            raise ValueError(
+                "У игры выше права Windows. Закройте агент и запустите его от имени "
+                "администратора либо запустите игру без повышения прав."
+            )
 
     def snapshot(self, target: tuple[int, int]) -> WindowSnapshot:
         return self.manager.snapshot(*target)
@@ -89,8 +118,12 @@ class InputEnvironment:
 
 
 class ActionController:
-    def __init__(self, environment: InputEnvironment | None = None) -> None:
+    def __init__(
+        self, environment: InputEnvironment | None = None, pico: PicoTransport | None = None
+    ) -> None:
         self.environment = environment or InputEnvironment()
+        self.pico = pico
+        self.backend_name = "Pico HID + SendInput cursor" if pico else "SendInput"
         self.validator = ActionValidator()
         self.hard_stop_ready: Callable[[], bool] = lambda: False
         self._lock = threading.RLock()
@@ -102,6 +135,7 @@ class ActionController:
         self._reason = "STOP"
         self._keys: dict[str, tuple[float, int]] = {}
         self._buttons: dict[str, tuple[float, int]] = {}
+        self._hold_started: dict[tuple[str, str], float] = {}
         self._lease = 0
         self._epoch = 0
         self._last_action = float("-inf")
@@ -135,13 +169,16 @@ class ActionController:
                 raise ValueError("Не все клавиши или кнопки освобождены")
             snapshot = self.environment.snapshot(target)
             if snapshot.minimized or snapshot.rect is None:
-                raise ValueError("Окно Parsec недоступно")
+                raise ValueError("Окно Lineage 2 / LU4 / Parsec недоступно")
+            self.environment.check_input_access(target[1])
+            if self.pico is not None:
+                self.pico.arm()
             self._target = target
             self._epoch += 1
             self._cancel.clear()
             self._armed = True
             self._reason = "READY — только ручные тесты M0"
-            logger.info("Ручной ввод разрешён для Parsec HWND=%s", target[0])
+            logger.info("Ручной ввод разрешён для Lineage 2 / LU4 / Parsec HWND=%s", target[0])
 
     def stop(self, reason: str = "STOP") -> None:
         self._cancel.set()
@@ -150,6 +187,11 @@ class ActionController:
             self._armed = False
             self._reason = reason
             self.release_all()
+            if self.pico is not None:
+                try:
+                    self.pico.stop()
+                except Exception:
+                    logger.exception("Pico не подтвердил STOP; действует timeout платы")
             logger.info("Ввод остановлен: %s", reason)
 
     def _send(self, event: Input) -> None:
@@ -173,7 +215,7 @@ class ActionController:
 
     def _validate(self) -> ClientRect:
         if self._target is None:
-            raise ValueError("Окно Parsec не выбрано")
+            raise ValueError("Окно Lineage 2 / LU4 / Parsec не выбрано")
         return self.validator.validate(
             self.environment.snapshot(self._target),
             armed=self.armed,
@@ -211,7 +253,9 @@ class ActionController:
                     if not rect.contains(*point) or not self.environment.owns_point(
                         self._target[0], point
                     ):
-                        raise ValueError("Точка находится вне Parsec или перекрыта другим окном")
+                        raise ValueError(
+                            "Точка находится вне Lineage 2 / LU4 / Parsec или перекрыта другим окном"
+                        )
                     if request.kind == "move":
                         desktop = self.environment.desktop()
                         # Центр пикселя в абсолютной сетке виртуального рабочего стола.
@@ -228,15 +272,41 @@ class ActionController:
                 if self._cancel.is_set():
                     raise ValueError("Получен STOP")
                 if self._validate() != rect:
-                    raise ValueError("Геометрия Parsec изменилась перед отправкой ввода")
+                    raise ValueError(
+                        "Геометрия Lineage 2 / LU4 / Parsec изменилась перед отправкой ввода"
+                    )
                 if request.kind != "key_down":
                     assert self._target is not None
                     if request.kind == "mouse_down" and self.environment.cursor() != point:
                         raise ValueError("Курсор переместился перед нажатием")
                     if not self.environment.owns_point(self._target[0], point):
-                        raise ValueError("Точка Parsec перекрыта перед отправкой ввода")
-                self._send(event)
-                self._last_action = now
+                        raise ValueError(
+                            "Точка Lineage 2 / LU4 / Parsec перекрыта перед отправкой ввода"
+                        )
+                if self.pico is not None and request.kind != "move":
+                    if request.kind == "key_down":
+                        assert request.key is not None
+                        self.pico.hold("KEY", request.key, request.duration_ms)
+                    else:
+                        assert request.button is not None
+                        self.pico.hold("BUTTON", request.button, request.duration_ms)
+                else:
+                    self._send(event)
+                # Проверки окна не входят в запрошенное время удержания.
+                sent_at = time.monotonic()
+                if request.kind == "key_down" and request.key is not None:
+                    self._keys[request.key] = (sent_at + request.duration_ms / 1000, lease)
+                    self._hold_started[("key", request.key)] = sent_at
+                elif request.kind == "mouse_down" and request.button is not None:
+                    self._buttons[request.button] = (sent_at + request.duration_ms / 1000, lease)
+                    self._hold_started[("mouse", request.button)] = sent_at
+                logger.info(
+                    "%s принял событие: %s; цель=%s",
+                    self.backend_name,
+                    request.model_dump(),
+                    self._target,
+                )
+                self._last_action = sent_at
                 return lease
             except Exception:
                 self.stop("ERROR — ввод заблокирован")
@@ -290,7 +360,7 @@ class ActionController:
                 x, y = self.environment.cursor()
                 x, y = x + dx, y + dy
                 if not rect.contains(x, y):
-                    raise ValueError("Перемещение выходит за пределы Parsec")
+                    raise ValueError("Перемещение выходит за пределы Lineage 2 / LU4 / Parsec")
                 self.mouse_move_absolute_client(
                     (x - rect.left) / max(1, rect.width - 1),
                     (y - rect.top) / max(1, rect.height - 1),
@@ -303,25 +373,44 @@ class ActionController:
         with self._lock:
             if key in self._keys:
                 try:
-                    self._send(self._key_event(key, True))
+                    if self.pico is not None:
+                        self.pico.release()
+                    else:
+                        self._send(self._key_event(key, True))
                 except Exception:
                     self._armed = False
                     self._cancel.set()
                     self._reason = "ERROR — клавиша не освобождена"
                     raise
                 del self._keys[key]
+                self._log_release("key", key)
 
     def mouse_button_up(self, button: str) -> None:
         with self._lock:
             if button in self._buttons:
                 try:
-                    self._send(self._mouse_event(MOUSE_BUTTONS[button][1]))
+                    if self.pico is not None:
+                        self.pico.release()
+                    else:
+                        self._send(self._mouse_event(MOUSE_BUTTONS[button][1]))
                 except Exception:
                     self._armed = False
                     self._cancel.set()
                     self._reason = "ERROR — кнопка мыши не освобождена"
                     raise
                 del self._buttons[button]
+                self._log_release("mouse", button)
+
+    def _log_release(self, kind: str, name: str) -> None:
+        started = self._hold_started.pop((kind, name), None)
+        if started is not None:
+            logger.info(
+                "%s принял отпускание %s %s; удержание по часам процесса %.1f мс",
+                self.backend_name,
+                kind,
+                name,
+                (time.monotonic() - started) * 1000,
+            )
 
     def release_all_keys(self) -> None:
         with self._lock:
@@ -357,6 +446,8 @@ class ActionController:
                 try:
                     if self._armed and not self.hard_stop_ready():
                         self.stop("EMERGENCY — hard-stop недоступен")
+                    if self.armed and self.pico is not None:
+                        self.pico.heartbeat()
                     if not self._keys and not self._buttons:
                         continue
                     if not self.armed:
@@ -370,7 +461,9 @@ class ActionController:
                         if not rect.contains(*point) or not self.environment.owns_point(
                             self._target[0], point
                         ):
-                            raise ValueError("Курсор покинул Parsec во время удержания")
+                            raise ValueError(
+                                "Курсор покинул Lineage 2 / LU4 / Parsec во время удержания"
+                            )
                     now = time.monotonic()
                     for key, (deadline, _lease) in list(self._keys.items()):
                         if now >= deadline:
@@ -387,3 +480,5 @@ class ActionController:
         self._shutdown.set()
         self._watchdog.join(timeout=2)
         self.release_all()
+        if self.pico is not None:
+            self.pico.close()

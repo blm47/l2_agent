@@ -5,8 +5,11 @@ from l2_agent.logging_setup import setup_logging
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="L2 Agent: диагностика Parsec / M0")
+    parser = argparse.ArgumentParser(
+        description="L2 Agent: Lineage 2 / LU4 / Parsec / настройка восприятия M1"
+    )
     parser.add_argument("--list-windows", action="store_true", help="Показать окна без GUI")
+    parser.add_argument("--pico-port", help="CDC data port Pico, например COM4")
     args = parser.parse_args()
     logger = setup_logging()
     if sys.platform != "win32":
@@ -22,11 +25,11 @@ def main() -> int:
         if not user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
             raise ctypes.WinError(ctypes.get_last_error())
 
-        from l2_agent.windows import ParsecWindowManager
+        from l2_agent.windows import GameWindowManager
 
         if args.list_windows:
-            for snapshot in ParsecWindowManager().discover():
-                logger.info("Окно Parsec: %s", snapshot.model_dump_json())
+            for snapshot in GameWindowManager().discover():
+                logger.info("Окно Lineage 2 / LU4 / Parsec: %s", snapshot.model_dump_json())
             return 0
 
         from PySide6.QtWidgets import QApplication
@@ -34,9 +37,9 @@ def main() -> int:
         from l2_agent.gui import MainWindow
 
         app = QApplication(sys.argv[:1])
-        window = MainWindow()
+        window = MainWindow(pico_port=args.pico_port)
         window.show()
-        logger.info("Запущена диагностика M0; управление вводом недоступно")
+        logger.info("Запущен M1: настройка ROI; ввод доступен только через ручные тесты")
         return app.exec()
     except Exception:
         logger.exception("Ошибка запуска L2 Agent")

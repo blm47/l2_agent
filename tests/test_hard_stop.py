@@ -27,7 +27,7 @@ def test_hotkey_dispatches_in_its_thread_and_unregisters(monkeypatch):
     try:
         assert hotkey.available
         assert called.wait(1)
-        api.RegisterHotKey.assert_called_once_with(None, 1, 0x4000, 0x79)
+        api.RegisterHotKey.assert_called_once_with(None, 1, 0x4000, 0xDC)
     finally:
         hotkey.close()
     assert not hotkey.available

@@ -1,8 +1,20 @@
 # Architecture
 
+## M1: local detector dataset collection
+
+The GUI can save a single original frame after a three-second delay. Collection
+pauses manual input and requires a fresh frame, focused selected window and matching
+client geometry. `dataset.py` writes PNG and versioned Pydantic metadata together
+through a temporary directory. WorldState hypotheses are separate from reviewed
+object annotations; an unlabeled empty object list is not a negative sample.
+No detector model or continuous trajectory recorder is implied by this collector.
+See `DETECTOR_DATASET.md` and deferred perception limitations in `TODO.md`.
+
 ## 1. System boundary
-The Lineage 2 client runs on a remote Windows machine.
-The local machine runs Parsec and L2 Agent.
+The Lineage 2 client runs either remotely through Parsec or locally as LU4.
+GameWindowManager discovers both supported processes; capture and input share
+the selected HWND/PID and client-area checks. References to the Parsec viewport
+below also apply to the selected local LU4 client area.
 
 L2 Agent may:
 - capture the Parsec client area
@@ -116,6 +128,19 @@ OpenCV-based parsing for:
 - experience progress if useful
 
 ### OCR
+`OCRProvider.recognize` returns text, confidence and normalized crop coordinates.
+The initial RapidOCR implementation is lazy, CPU-only and shared under a lock by
+bar proposals and the background target-name reader. The latter processes only
+the header above a confirmed target-HP ROI at up to 1 Hz. One crop/job/result is
+retained; no full-resolution OCR queue or second model instance is created.
+
+Names carry their own source frame/time because OCR is asynchronous. Results
+expire after 1.5 s and require matching bright text masks, window/geometry and ROI;
+the standard close-button template establishes panel presence even without HP.
+Panel disappearance invalidates the name. A name does not classify an entity as
+enemy, NPC or player. Standard LU4 header geometry is assumed and may need a
+separate configurable text ROI for other skins/layouts.
+
 Used for:
 - mob/NPC names
 - quest text
@@ -168,6 +193,13 @@ Example:
 
 See docs/WORLD_STATE.md.
 
+The implemented M1 subset is `world_state.py`: frame metadata and HP/MP/CP/target
+HP observations with explicit unknown values and individual confidence. The JSON
+above is illustrative future scope, not the current API. `bar_parser.py` reads
+confirmed ROIs from each latest frame and GUI publishes the resulting snapshot.
+Frames older than one second and invalid/missing ROIs yield unknowns; missing
+capture/window selection clears the GUI snapshot. No perception result triggers input.
+
 ## 8. AgentCore
 AgentCore is a slower reasoning layer.
 
@@ -217,6 +249,13 @@ Checks include:
 
 ## 11. ActionController
 The only module allowed to call SendInput.
+
+Optional Pico mode (`--pico-port`) routes keyboard and mouse-button holds through
+PicoTransport/USB CDC to standard HID reports. Cursor positioning still uses
+SendInput under the same geometry checks. PicoTransport is called only downstream
+of ActionController and under its lock. Board firmware independently enforces
+allowlisted input, bounded holds and heartbeat/disconnect disarming. Transport
+errors stop input without falling back to SendInput presses. See `PICO_SETUP.md`.
 
 Required primitives:
 - key_down

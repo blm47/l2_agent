@@ -41,7 +41,7 @@ def worker_setup(monkeypatch):
     manager.snapshot.return_value = SimpleNamespace(rect=rect)
     backend = Mock()
     backend.grab.return_value = np.zeros((10, 20, 3), dtype=np.uint8)
-    monkeypatch.setattr(capture, "ParsecWindowManager", lambda: manager)
+    monkeypatch.setattr(capture, "GameWindowManager", lambda: manager)
     monkeypatch.setattr(capture, "BetterCamBackend", lambda: backend)
     worker = capture.CaptureWorker()
     yield worker, manager, backend

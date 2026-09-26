@@ -6,6 +6,9 @@ from ctypes import wintypes
 
 logger = logging.getLogger("l2_agent.hard_stop")
 
+HARD_STOP_KEY = "\\"
+HARD_STOP_VK = 0xDC  # VK_OEM_5: клавиша обратного слеша над Enter.
+
 
 class HardStopHotkey:
     def __init__(self, callback: Callable[[], None]) -> None:
@@ -42,18 +45,18 @@ class HardStopHotkey:
         user32.PeekMessageW.restype = wintypes.BOOL
         registered = False
         try:
-            # F10 без модификаторов; повторное срабатывание при удержании отключено.
-            if not user32.RegisterHotKey(None, 1, 0x4000, 0x79):
+            # Без модификаторов; повторное срабатывание при удержании отключено.
+            if not user32.RegisterHotKey(None, 1, 0x4000, HARD_STOP_VK):
                 raise ctypes.WinError(ctypes.get_last_error())
             registered = True
             self._registered.set()
             self._ready.set()
-            logger.info("Глобальный hard-stop зарегистрирован: F10")
+            logger.info("Глобальный hard-stop зарегистрирован: %s", HARD_STOP_KEY)
             message = wintypes.MSG()
             while not self._stop.is_set():
                 while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
                     if message.message == 0x0312 and message.wParam == 1:
-                        logger.warning("Hard-stop: нажата F10")
+                        logger.warning("Hard-stop: нажата %s", HARD_STOP_KEY)
                         self._callback()
                 self._stop.wait(0.01)
         except Exception as exc:

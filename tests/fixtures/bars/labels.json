@@ -1,0 +1,54 @@
+{
+  "source": "artifacts/pico/native-probe/before.png",
+  "date": "2026-09-25",
+  "samples": [
+    {
+      "file": "hp.png",
+      "kind": "hp",
+      "value": 1.0,
+      "roi_pixels": [
+        104,
+        69,
+        499,
+        84
+      ],
+      "visible_text": "114/114"
+    },
+    {
+      "file": "mp.png",
+      "kind": "mp",
+      "value": 1.0,
+      "roi_pixels": [
+        104,
+        87,
+        510,
+        101
+      ],
+      "visible_text": "98/98"
+    },
+    {
+      "file": "cp.png",
+      "kind": "cp",
+      "value": 1.0,
+      "roi_pixels": [
+        103,
+        51,
+        488,
+        66
+      ],
+      "visible_text": "57/57"
+    },
+    {
+      "file": "target_hp.png",
+      "kind": "target_hp",
+      "value": 1.0,
+      "roi_pixels": [
+        1162,
+        89,
+        1475,
+        104
+      ],
+      "visible_text": "58/58"
+    }
+  ]
+}

@@ -50,7 +50,9 @@ class ActionValidator:
         if not armed or not hard_stop_ready:
             raise ValueError("Ввод остановлен или hard-stop недоступен")
         if not snapshot.focused or snapshot.minimized or snapshot.rect is None:
-            raise ValueError("Выбранное окно Parsec должно быть видимым и в фокусе")
+            raise ValueError(
+                "Выбранное окно Lineage 2 / LU4 / Parsec должно быть видимым и в фокусе"
+            )
         if modifiers_pressed:
             raise ValueError("Отпустите Ctrl, Alt, Shift и Win перед вводом")
         rect = snapshot.rect
@@ -58,5 +60,7 @@ class ActionValidator:
             desktop.contains(rect.left, rect.top)
             and desktop.contains(rect.right - 1, rect.bottom - 1)
         ):
-            raise ValueError("Клиентская область Parsec выходит за пределы экрана")
+            raise ValueError(
+                "Клиентская область Lineage 2 / LU4 / Parsec выходит за пределы экрана"
+            )
         return rect

@@ -205,6 +205,8 @@ Do not implement anti-cheat bypasses, process injection, memory reading, packet 
 - Read docs/ARCHITECTURE.md and docs/ROADMAP.md before large changes.
 - Prefer small, testable modules.
 - Add tests with every behavior change.
+- После минорных доработок запускайте только тесты, затронутые изменением, включая непосредственно связанные сценарии. Не запускайте весь набор тестов после каждого изменения кода.
+- Полный набор тестов запускайте только при закрытии крупной вехи (milestone), а не после отдельных исправлений или промежуточных итераций.
 - Do not create generic abstractions until a concrete second use case exists.
 - Record meaningful architecture changes in docs/DECISIONS.md.
 - Do not silently add heavyweight infrastructure.
