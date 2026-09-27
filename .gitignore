@@ -41,3 +41,5 @@ config/roi.local.json.tmp
 runs/
 datasets/
 checkpoints/
+
+screenshots/*
