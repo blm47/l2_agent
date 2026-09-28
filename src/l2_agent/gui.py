@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pywintypes
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QImage, QPixmap
+from PySide6.QtGui import QCloseEvent, QImage
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,13 +26,14 @@ from l2_agent.bar_worker import BarDetectionWorker
 from l2_agent.capture import CapturedFrame, CaptureWorker
 from l2_agent.dataset import DEFAULT_DATASET_PATH, save_detector_sample
 from l2_agent.dataset_editor import DatasetEditor
+from l2_agent.detector import DetectorWorker, OnnxDetector
 from l2_agent.hard_stop import HARD_STOP_KEY, HardStopHotkey
 from l2_agent.pico import PicoTransport
 from l2_agent.roi import BAR_LABELS, DEFAULT_ROI_PATH, RoiProfile, load_profile, save_profile
 from l2_agent.roi_editor import RoiCanvas, RoiEditor
 from l2_agent.target_ocr import TargetNameReader
 from l2_agent.windows import GameWindowManager, WindowSnapshot
-from l2_agent.world_state import WorldState
+from l2_agent.world_state import ObjectObservation, WorldState
 
 logger = logging.getLogger("l2_agent.gui")
 
@@ -57,7 +58,8 @@ MOUSE_TESTS = {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, roi_path: Path = DEFAULT_ROI_PATH, pico_port: str | None = None) -> None:
+    def __init__(self, roi_path: Path = DEFAULT_ROI_PATH, pico_port: str | None = None,
+                 detector_path: Path | None = None) -> None:
         super().__init__()
         self.roi_path = roi_path
         self.dataset_path = DEFAULT_DATASET_PATH
@@ -68,6 +70,7 @@ class MainWindow(QMainWindow):
         self.roi_error = ""
         self.bar_worker = BarDetectionWorker()
         self.target_reader = TargetNameReader()
+        self.detector = DetectorWorker(OnnxDetector(detector_path)) if detector_path else None
         self._auto_key: tuple[int, int, int, int] | None = None
         self._auto_generation = 0
         self._auto_busy = False
@@ -118,6 +121,14 @@ class MainWindow(QMainWindow):
         self._preview_size = self.preview.size()
         self.preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.preview, 1)
+        self.detector_enabled = QCheckBox("Детектор объектов — экспериментальная модель")
+        self.detector_enabled.setEnabled(self.detector is not None)
+        self.detector_enabled.setChecked(self.detector is not None)
+        self.detector_enabled.toggled.connect(self.update_preview)
+        layout.addWidget(self.detector_enabled)
+        self.detector_status = QLabel("Детектор: модель не подключена")
+        self.detector_status.setWordWrap(True)
+        layout.addWidget(self.detector_status)
         self.auto_bars = QCheckBox("Искать полосы автоматически")
         self.auto_bars.setChecked(True)
         self.auto_bars.toggled.connect(self.toggle_auto_bars)
@@ -383,18 +394,16 @@ class MainWindow(QMainWindow):
         image = QImage(
             frame.rgb.data, width, height, frame.rgb.strides[0], QImage.Format.Format_RGB888
         )
-        self.preview.setPixmap(
-            QPixmap.fromImage(image).scaled(
-                self.preview.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+        self.preview.set_image(image)
         self._shown_sequence = frame.sequence
         self._preview_size = self.preview.size()
 
     def clear_world_state(self) -> None:
         self.target_reader.invalidate()
+        if self.detector is not None:
+            self.detector.invalidate()
+        self.preview.detections = ()
+        self.detector_status.setText("Детектор: нет свежего кадра")
         self.world_state = None
         self.world_status.setText("WorldState: нет свежего кадра")
         self.world_status.setToolTip("")
@@ -404,14 +413,29 @@ class MainWindow(QMainWindow):
     def update_world_state(self, frame: CapturedFrame) -> None:
         profile = None if self._proposals or self._auto_force else self.roi_profile
         state = perceive_bars(frame, profile)
+        detection = (
+            self.detector.observe(frame, self.detector_enabled.isChecked()
+                                  and self.preview_enabled.isChecked(), self._world_target)
+            if self.detector is not None else ObjectObservation(reason="Модель не подключена")
+        )
         state = state.model_copy(
             update={
+                "detected_objects": detection,
                 "target_name": self.target_reader.observe(
                     frame, profile, profile is not None, self._world_target
                 )
             }
         )
         self.world_state = state
+        self.preview.detections = detection.objects
+        if detection.ready:
+            self.detector_status.setText(
+                f"Детектор: {len(detection.objects)} объектов | кадр #{detection.frame_id} | "
+                f"возраст {max(0, time.monotonic() - detection.timestamp):.2f} с | "
+                f"обработка {detection.inference_ms or 0:.0f} мс"
+            )
+        else:
+            self.detector_status.setText(f"Детектор: {detection.reason}")
         observations = {
             "hp": state.player.hp,
             "mp": state.player.mp,
@@ -470,6 +494,8 @@ class MainWindow(QMainWindow):
             editor.deleteLater()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.detector is not None:
+            self.detector.close()
         self.dataset_timer.stop()
         self.test_timer.stop()
         self.controller.close()

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from l2_agent.roi import BAR_LABELS, BarName, NormalizedBox, RoiProfile
+from l2_agent.world_state import DetectedObject
 
 COLORS = {"hp": "#ff6060", "mp": "#609fff", "cp": "#ffdc50", "target_hp": "#ff90ee"}
 
@@ -33,6 +34,7 @@ class RoiCanvas(QLabel):
         super().__init__(text)
         self.boxes: dict[BarName, NormalizedBox] = {}
         self.bar_text: dict[BarName, str] = {}
+        self.detections: tuple[DetectedObject, ...] = ()
         self.editable = False
         self._start: QPointF | None = None
         self._end: QPointF | None = None
@@ -44,6 +46,10 @@ class RoiCanvas(QLabel):
     def set_image(self, image: QImage) -> None:
         self._source = QPixmap.fromImage(image)
         self._scale_image()
+
+    def clear(self) -> None:
+        self._source = None
+        super().clear()
 
     def _scale_image(self) -> None:
         if self._source is not None:
@@ -121,6 +127,14 @@ class RoiCanvas(QLabel):
         if rect.isEmpty():
             return
         painter = QPainter(self)
+        painter.setPen(QPen(QColor("#70ff90"), 1))
+        for obj in self.detections:
+            box = obj.box
+            bounds = QRectF(rect.left() + box.x1 * rect.width(), rect.top() + box.y1 * rect.height(),
+                            (box.x2 - box.x1) * rect.width(), (box.y2 - box.y1) * rect.height())
+            painter.drawRect(bounds)
+            painter.drawText(QPointF(bounds.left(), max(12, bounds.top() - 3)),
+                             f"{obj.kind} {obj.confidence:.2f}")
         for name, box in self.boxes.items():
             painter.setPen(QPen(QColor(COLORS[name]), 2))
             bounds = QRectF(

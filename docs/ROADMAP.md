@@ -1,11 +1,34 @@
 # Roadmap
 
-## Current status — 2026-09-25
+## Current status — 2026-09-28
+
+- **M1 — Perception accepted by the user on 2026-09-28.** Full test suite:
+  337 passed. Acceptance evidence and limitations: [M1_ACCEPTANCE.md](M1_ACCEPTANCE.md).
+  The replay GUI pause is explicitly deferred to TODO; target-name OCR stability
+  and additional YOLO training remain deferred. M2 is next in the roadmap but
+  has not been started. Earlier entries below are historical progress reports.
 
 - Hard-stop changed at user request from F10 to backslash (`\`, above Enter).
   Historical F10 evidence below predates this change. New live-key acceptance is pending.
 
-- Active milestone: **M1 — Perception**, not yet accepted.
+- Previously active milestone: **M1 — Perception**, now accepted as recorded above.
+- 2026-09-28: preview now retains the original image in RoiCanvas and rescales
+  immediately on layout changes; clearing also discards that image so resize
+  cannot restore an unavailable frame. 90 affected GUI/capture/window/detector/
+  ROI/WorldState/dataset tests passed. Saved-frame ONNX replay produced 19 results
+  in 20 seconds, with the complete frame visible in the saved GUI image.
+  Replay also recorded a 9.6 s event-loop gap; live smoothness and the user's
+  reported cropping still need confirmation in the actual game window.
+- 2026-09-27: trained taxonomy-v2 YOLOv8n on 63 reviewed frames / 1002 objects,
+  split visually by scene into 53 train and 10 val. 60 epochs completed, exit 0.
+  Best weights mAP50=0.5021, mAP50-95=0.4022 across 19 represented val classes.
+  Mob/NPC recognition remains weak; four classes lack val examples. No autonomous
+  targeting enabled. See `DETECTOR_SPLIT_V2.md` for groups, paths and limitations.
+- 2026-09-27: 21 additional reviewed taxonomy-v2 frames found alongside the
+  original 23 v1 frames. Current groups.json still references v1. Added editor
+  save-and-next navigation, frame ID/progress and selected-box highlighting;
+  38 affected dataset/editor/GUI tests passed. Local class inventory is available
+  in datasets/detector/taxonomy-v2-inventory.csv.
 - Expanded annotation taxonomy to 23 classes, preserving original IDs 0–5.
   Editor supports changing a box class without redrawing. Old samples require
   explicit review for taxonomy v2 export; existing baseline weights remain v1.

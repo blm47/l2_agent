@@ -15,7 +15,7 @@ from l2_agent.geometry import ClientRect
 from l2_agent.gui import KEY_TESTS, MOUSE_TESTS, MainWindow
 from l2_agent.roi import NormalizedBox, RoiProfile, load_profile
 from l2_agent.windows import WindowSnapshot
-from l2_agent.world_state import NameObservation
+from l2_agent.world_state import DetectedObject, NameObservation, ObjectObservation
 
 
 @pytest.mark.parametrize("pico_port", [None, "COM99"])
@@ -71,8 +71,41 @@ def test_gui_tracks_window_and_handles_disappearance(monkeypatch, tmp_path, pico
         )
         window.update_preview()
         assert not window.preview.pixmap().isNull()
+        # Изменение layout должно сразу вписывать весь кадр, без нового capture.
+        window.preview.resize(360, 180)
+        app.processEvents()
+        assert window.preview.image_rect().width() <= window.preview.width()
+        assert window.preview.image_rect().height() <= window.preview.height()
+        assert window.preview.pixmap().width() / window.preview.pixmap().height() == pytest.approx(
+            800 / 600, abs=0.01
+        )
+        window.preview.clear()
+        window.preview.resize(400, 200)
+        app.processEvents()
+        assert window.preview.pixmap().isNull()
+        window._shown_sequence = -1
+        window.update_preview()
         assert window.world_state.frame_id == 1
         assert window.world_state.player.hp.value is None
+        detector = Mock()
+        observation = ObjectObservation(
+            ready=True, frame_id=1, timestamp=capture.latest.return_value.frame.timestamp,
+            inference_ms=25, objects=(DetectedObject(
+                kind="mob", confidence=.8, box=NormalizedBox(x1=.1, y1=.2, x2=.3, y2=.4)
+            ),),
+        )
+        detector.observe.return_value = observation
+        window.detector = detector
+        window.detector_enabled.setEnabled(True)
+        window.detector_enabled.setChecked(True)
+        window.update_preview()
+        assert window.world_state.detected_objects == observation
+        assert window.preview.detections == observation.objects
+        window.clear_world_state()
+        assert window.preview.detections == ()
+        detector.invalidate.assert_called()
+        window.detector = None
+        window.detector_enabled.setChecked(False)
         window.dataset_path = tmp_path / "dataset"
         window.schedule_dataset_sample()
         assert window.dataset_timer.isActive()

@@ -17,6 +17,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+detector = [
+    "onnxruntime>=1.17,<2",
+]
 pico = [
     "pyserial>=3.5,<4",
 ]

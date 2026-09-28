@@ -143,6 +143,9 @@ dependencies = [
 capture = [
     { name = "bettercam" },
 ]
+detector = [
+    { name = "onnxruntime" },
+]
 dev = [
     { name = "mypy" },
     { name = "pytest" },
@@ -161,6 +164,7 @@ requires-dist = [
     { name = "bettercam", marker = "extra == 'capture'", specifier = "==1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
     { name = "numpy", specifier = ">=2.0,<3" },
+    { name = "onnxruntime", marker = "extra == 'detector'", specifier = ">=1.17,<2" },
     { name = "opencv-python", specifier = ">=4.10,<5" },
     { name = "pydantic", specifier = ">=2.8,<3" },
     { name = "pyserial", marker = "extra == 'pico'", specifier = ">=3.5,<4" },
@@ -171,7 +175,7 @@ requires-dist = [
     { name = "rapidocr-onnxruntime", marker = "extra == 'perception'", specifier = ">=1.4,<2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
 ]
-provides-extras = ["pico", "perception", "capture", "dev"]
+provides-extras = ["detector", "pico", "perception", "capture", "dev"]
 
 [[package]]
 name = "librt"

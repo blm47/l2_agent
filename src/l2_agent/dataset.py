@@ -97,7 +97,7 @@ class DetectorSample(BaseModel):
     window: WindowSnapshot
     world_state: WorldState | None = None
     roi_profile: RoiProfile | None = None
-    annotation_status: Literal["unlabeled", "reviewed"] = "unlabeled"
+    annotation_status: Literal["unlabeled", "preannotated", "reviewed"] = "unlabeled"
     objects: list[ObjectAnnotation] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -107,7 +107,7 @@ class DetectorSample(BaseModel):
         ):
             raise ValueError("Новые классы требуют taxonomy_version=2")
         if self.annotation_status == "unlabeled" and self.objects:
-            raise ValueError("Объекты требуют явного статуса reviewed")
+            raise ValueError("Объекты требуют статуса preannotated или reviewed")
         if self.saved_at_utc.utcoffset() is None:
             raise ValueError("Время сохранения должно содержать timezone")
         if self.window.rect is None or (self.width, self.height) != (

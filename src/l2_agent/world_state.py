@@ -1,6 +1,34 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from l2_agent.roi import NormalizedBox
+
+
+class DetectedObject(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    kind: str = Field(min_length=1, max_length=80)
+    confidence: float = Field(gt=0, le=1)
+    box: NormalizedBox
+
+
+class ObjectObservation(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    ready: bool = False
+    objects: tuple[DetectedObject, ...] = Field(default=(), max_length=200)
+    frame_id: int | None = Field(default=None, ge=0)
+    timestamp: float | None = Field(default=None, ge=0)
+    inference_ms: float | None = Field(default=None, ge=0)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "ObjectObservation":
+        if self.ready and (self.frame_id is None or self.timestamp is None):
+            raise ValueError("Детекции требуют метаданных исходного кадра")
+        if not self.ready and self.objects:
+            raise ValueError("Недоступный детектор не может содержать объекты")
+        return self
 
 
 class BarObservation(BaseModel):
@@ -69,3 +97,4 @@ class WorldState(BaseModel):
     player: PlayerState = Field(default_factory=PlayerState)
     target_hp: BarObservation = Field(default_factory=BarObservation)
     target_name: NameObservation = Field(default_factory=NameObservation)
+    detected_objects: ObjectObservation = Field(default_factory=ObjectObservation)

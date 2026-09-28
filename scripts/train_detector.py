@@ -87,10 +87,14 @@ def main() -> int:
                 ("precision", "recall", "map50", "map50_95"),
                 map(float, metrics.box.class_result(index)),
             ))
+        val_records = [r for r in report["records"] if r["split"] == "val"]
+        val_classes = {obj["kind"] for r in val_records for obj in r["sample"]["objects"]}
         summary = {"overall": metrics.results_dict, "per_class": per_class,
                    "speed_ms": metrics.speed,
                    "peak_cuda_allocated_mb": torch.cuda.max_memory_allocated() / 2**20,
-                   "limitation": "Только 6 val кадров из тех же сессий; не приёмка M1"}
+                   "val_frames": len(val_records),
+                   "classes_without_val_examples": [c for c in report["classes"] if c not in val_classes],
+                   "limitation": "Val используется при обучении; это не независимый test и не приёмка M1"}
         (run / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
         for _ in best.predict(source=str(snapshot / "images/val"), imgsz=960, device=0,
                               conf=0.25, save=True, save_txt=True, save_conf=True,

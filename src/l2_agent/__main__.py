@@ -1,5 +1,6 @@
 import argparse
 import sys
+from pathlib import Path
 
 from l2_agent.logging_setup import setup_logging
 
@@ -10,6 +11,8 @@ def main() -> int:
     )
     parser.add_argument("--list-windows", action="store_true", help="Показать окна без GUI")
     parser.add_argument("--pico-port", help="CDC data port Pico, например COM4")
+    parser.add_argument("--detector-model", type=Path, default=Path("models/detector-v2/model.onnx"))
+    parser.add_argument("--no-detector", action="store_true", help="Запустить без детектора")
     args = parser.parse_args()
     logger = setup_logging()
     if sys.platform != "win32":
@@ -37,7 +40,8 @@ def main() -> int:
         from l2_agent.gui import MainWindow
 
         app = QApplication(sys.argv[:1])
-        window = MainWindow(pico_port=args.pico_port)
+        model_path = args.detector_model if not args.no_detector and args.detector_model.exists() else None
+        window = MainWindow(pico_port=args.pico_port, detector_path=model_path)
         window.show()
         logger.info("Запущен M1: настройка ROI; ввод доступен только через ручные тесты")
         return app.exec()

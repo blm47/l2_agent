@@ -21,6 +21,7 @@ class ObjectCanvas(RoiCanvas):
     def __init__(self) -> None:
         super().__init__()
         self.objects: list[ObjectAnnotation] = []
+        self.active_index = -1
         self.editable = True
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -29,6 +30,8 @@ class ObjectCanvas(RoiCanvas):
         painter = QPainter(self)
         painter.setPen(QPen(QColor("#70ff90"), 2))
         for index, obj in enumerate(self.objects):
+            painter.setPen(QPen(QColor("#ffff00" if index == self.active_index else "#70ff90"),
+                                4 if index == self.active_index else 2))
             box = obj.box
             bounds = QRectF(
                 rect.left() + box.x1 * rect.width(), rect.top() + box.y1 * rect.height(),
@@ -45,6 +48,8 @@ class DatasetEditor(QDialog):
         super().__init__(parent)
         self.path = path
         self.sample, payload = load_detector_sample(path)
+        self.queue = sorted(path.parent.parent.glob("*/sample.json"))
+        self.position = self.queue.index(path) if path in self.queue else -1
         self.setWindowTitle("M1 — разметка объектов")
         self.resize(1100, 800)
         layout = QVBoxLayout(self)
@@ -74,6 +79,7 @@ class DatasetEditor(QDialog):
         self.canvas.box_selected.connect(self.add_object)
         layout.addWidget(self.canvas, 1)
         self.objects = QListWidget()
+        self.objects.currentRowChanged.connect(self.highlight_object)
         self.objects.setMaximumHeight(100)
         layout.addWidget(self.objects)
         self.reviewed = QCheckBox("Все объекты размечены; пустой список означает отсутствие объектов")
@@ -86,12 +92,50 @@ class DatasetEditor(QDialog):
                 "пропущенные объекты перед подтверждением."
             )
         layout.addWidget(self.status)
+        self.progress = QLabel()
+        layout.addWidget(self.progress)
+        self.next_button = QPushButton("Сохранить и следующий кадр")
+        self.next_button.clicked.connect(self.save_next)
+        layout.addWidget(self.next_button)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
                                    QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.refresh_objects()
+        self.update_progress()
+
+    def highlight_object(self, index: int) -> None:
+        self.canvas.active_index = index
+        self.canvas.update()
+
+    def update_progress(self) -> None:
+        self.progress.setText(
+            f"Кадр {self.position + 1}/{len(self.queue)}: {self.path.parent.name} | "
+            f"Схема {self.sample.taxonomy_version}, {self.sample.annotation_status}"
+        )
+        self.next_button.setEnabled(0 <= self.position < len(self.queue) - 1)
+
+    def save_next(self) -> None:
+        if not 0 <= self.position < len(self.queue) - 1:
+            return
+        # Проверяем следующий файл до сохранения, чтобы ошибка чтения не меняла текущий кадр.
+        path = self.queue[self.position + 1]
+        try:
+            sample, payload = load_detector_sample(path)
+        except (OSError, ValueError) as exc:
+            logger.warning("Следующий кадр не открыт: %s", exc)
+            self.status.setText(f"Следующий кадр не открыт: {exc}")
+            return
+        if not self.persist():
+            return
+        self.path, self.sample = path, sample
+        self.position += 1
+        self.canvas.set_image(QImage.fromData(payload, "PNG"))
+        self.canvas.objects = list(sample.objects)
+        self.refresh_objects()
+        self.status.setText("Проверьте все объекты перед сохранением следующего кадра.")
+        self.update_progress()
 
     def refresh_objects(self) -> None:
         self.objects.clear()
@@ -129,14 +173,19 @@ class DatasetEditor(QDialog):
         self.refresh_objects()
         self.objects.setCurrentRow(index)
 
-    def save(self) -> None:
+    def persist(self) -> bool:
         if not self.reviewed.isChecked():
             self.status.setText("Подтвердите, что разметка кадра завершена.")
-            return
+            return False
         try:
             save_annotations(self.path, self.sample, self.canvas.objects)
+            self.sample, _ = load_detector_sample(self.path)
         except (OSError, ValueError) as exc:
             logger.warning("Не удалось сохранить разметку: %s", exc)
             self.status.setText(str(exc))
-            return
-        self.accept()
+            return False
+        return True
+
+    def save(self) -> None:
+        if self.persist():
+            self.accept()

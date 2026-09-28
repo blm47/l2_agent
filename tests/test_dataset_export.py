@@ -63,13 +63,15 @@ def test_export_coordinates_classes_and_negative_sample(tmp_path, dataset):
         export_dataset(root, output, groups)
 
 
-@pytest.mark.parametrize("problem", ["unreviewed", "duplicate", "missing_val", "leak", "corrupt"])
+@pytest.mark.parametrize("problem", ["unreviewed", "preannotated", "duplicate", "missing_val", "leak", "corrupt"])
 def test_rejects_invalid_dataset_before_creating_output(tmp_path, dataset, problem):
     root, groups, ids = dataset
     path = root / ids[1] / "sample.json"
     data = json.loads(path.read_text("utf-8"))
     if problem == "unreviewed":
         data["annotation_status"] = "unlabeled"
+    elif problem == "preannotated":
+        data["annotation_status"] = "preannotated"
     elif problem == "duplicate":
         groups["scene-b"].samples = [ids[0]]
     elif problem == "missing_val":

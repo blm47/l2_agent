@@ -177,3 +177,80 @@ def test_reclassify_keeps_box_and_requires_review(tmp_path, source):
     editor.save()
     assert load_detector_sample(path)[0].objects[0].kind == "mob_selected"
     editor.close()
+
+
+def test_save_next_requires_review_and_preserves_next_on_cancel(tmp_path, source):
+    from PySide6.QtWidgets import QApplication
+    from l2_agent.dataset_editor import DatasetEditor
+
+    app = QApplication.instance() or QApplication([])
+    paths = sorted(save_detector_sample(*source, root=tmp_path) / "sample.json"
+                   for _ in range(2))
+    editor = DatasetEditor(paths[0])
+    next_bytes = paths[1].read_bytes()
+    editor.add_object(NormalizedBox(x1=.1, y1=.2, x2=.4, y2=.6))
+    editor.objects.setCurrentRow(0)
+    assert editor.canvas.active_index == 0
+    editor.save_next()
+    assert editor.path == paths[0]
+    assert load_detector_sample(paths[0])[0].annotation_status == "unlabeled"
+    editor.reviewed.setChecked(True)
+    editor.save_next()
+    assert editor.path == paths[1]
+    assert not editor.reviewed.isChecked()
+    assert not editor.next_button.isEnabled()
+    assert len(load_detector_sample(paths[0])[0].objects) == 1
+    editor.reject()
+    assert paths[1].read_bytes() == next_bytes
+    editor.close()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_grabber_preannotations_open_in_editor(tmp_path, source, empty):
+    import importlib.util
+    import os
+    from pathlib import Path
+    from unittest.mock import Mock
+    from uuid import UUID
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from l2_agent.dataset_editor import DatasetEditor
+    from l2_agent.world_state import DetectedObject
+
+    spec = importlib.util.spec_from_file_location(
+        "grab_dataset", Path(__file__).resolve().parents[1] / "scripts/grab_pic_dataset.py"
+    )
+    grabber = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(grabber)
+    detected = DetectedObject(kind="mob_selected", confidence=.9,
+                              box=NormalizedBox(x1=.1, y1=.2, x2=.4, y2=.6))
+    detector = Mock()
+    detector.detect.return_value = () if empty else (detected,)
+    directory = grabber.save_preannotated_sample(*source, detector, tmp_path)
+    assert UUID(directory.name).hex == directory.name
+    assert {p.name for p in directory.iterdir()} == {"image.png", "sample.json"}
+    sample, payload = load_detector_sample(directory / "sample.json")
+    assert sample.annotation_status == "preannotated"
+    assert len(sample.objects) == (0 if empty else 1)
+    if not empty:
+        assert sample.objects[0].box == detected.box
+        assert sample.objects[0].selected is True
+    rgb = cv2.cvtColor(cv2.imdecode(np.frombuffer(payload, np.uint8), 1), cv2.COLOR_BGR2RGB)
+    np.testing.assert_array_equal(rgb, source[0].rgb)
+    app = QApplication.instance() or QApplication([])
+    editor = DatasetEditor(directory / "sample.json")
+    try:
+        assert editor.canvas.objects == sample.objects
+        assert not editor.reviewed.isChecked()
+        assert not editor.persist()
+        editor.reviewed.setChecked(True)
+        assert editor.persist()
+        assert load_detector_sample(directory / "sample.json")[0].annotation_status == "reviewed"
+    finally:
+        editor.close()
+    detector.detect.side_effect = RuntimeError("inference failed")
+    with pytest.raises(RuntimeError):
+        grabber.save_preannotated_sample(*source, detector, tmp_path)
+    samples = [load_detector_sample(p)[0] for p in tmp_path.glob("*/sample.json")]
+    assert sorted(s.annotation_status for s in samples) == ["reviewed", "unlabeled"]
