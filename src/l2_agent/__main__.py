@@ -7,12 +7,15 @@ from l2_agent.logging_setup import setup_logging
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="L2 Agent: Lineage 2 / LU4 / Parsec / настройка восприятия M1"
+        description="L2 Agent: Lineage 2 / LU4 / Parsec / M2 advisory mode"
     )
     parser.add_argument("--list-windows", action="store_true", help="Показать окна без GUI")
     parser.add_argument("--pico-port", help="CDC data port Pico, например COM4")
     parser.add_argument("--detector-model", type=Path, default=Path("models/detector-v2/model.onnx"))
     parser.add_argument("--no-detector", action="store_true", help="Запустить без детектора")
+    parser.add_argument("--world-source", choices=("cv", "network"), default="cv")
+    parser.add_argument("--llm-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--llm-model", default="Ternary-Bonsai-2-27B-PTQ1_0.gguf")
     args = parser.parse_args()
     logger = setup_logging()
     if sys.platform != "win32":
@@ -38,12 +41,15 @@ def main() -> int:
         from PySide6.QtWidgets import QApplication
 
         from l2_agent.gui import MainWindow
+        from l2_agent.advisory import LocalChatProvider
 
         app = QApplication(sys.argv[:1])
         model_path = args.detector_model if not args.no_detector and args.detector_model.exists() else None
-        window = MainWindow(pico_port=args.pico_port, detector_path=model_path)
+        window = MainWindow(pico_port=args.pico_port, detector_path=model_path,
+                            llm_provider=LocalChatProvider(args.llm_model, args.llm_url),
+                            world_source=args.world_source)
         window.show()
-        logger.info("Запущен M1: настройка ROI; ввод доступен только через ручные тесты")
+        logger.info("Запущен M2 advisory mode; ввод доступен только через ручные тесты")
         return app.exec()
     except Exception:
         logger.exception("Ошибка запуска L2 Agent")

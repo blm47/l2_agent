@@ -1,0 +1,7 @@
+healer-cooldowns.json
+healer-cooldowns.tmp
+.venv-build/
+firmware/vendor/*.uf2
+firmware/vendor/*.txt
+packaging/THIRD_PARTY_NOTICES.txt
+packaging/licenses/

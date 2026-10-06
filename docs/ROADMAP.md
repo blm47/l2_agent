@@ -1,12 +1,25 @@
 # Roadmap
 
+## Update - 2026-10-03
+
+User authorized passive network observation alongside CV (ADR-023).
+M2 remains active. Source selection and bounded TCP capture are implemented;
+LU4 decoding and network WorldState are pending. See NETWORK_STATE.md.
+
 ## Current status — 2026-09-28
 
 - **M1 — Perception accepted by the user on 2026-09-28.** Full test suite:
   337 passed. Acceptance evidence and limitations: [M1_ACCEPTANCE.md](M1_ACCEPTANCE.md).
   The replay GUI pause is explicitly deferred to TODO; target-name OCR stability
   and additional YOLO training remain deferred. M2 is next in the roadmap but
-  has not been started. Earlier entries below are historical progress reports.
+  is now active. Earlier entries below are historical progress reports.
+
+- **M2 — Brain advisory mode started on 2026-09-28.** Initial LLMProvider,
+  local chat adapter configurable for Bonsai/Qwen, strict proposal contracts,
+  background GUI advice and benchmark harness implemented. No execution path.
+  33 affected tests passed. Local server refused connection; real generation
+  and hardware acceptance pending. See [M2_ADVISORY.md](M2_ADVISORY.md).
+  M2 is not complete.
 
 - Hard-stop changed at user request from F10 to backslash (`\`, above Enter).
   Historical F10 evidence below predates this change. New live-key acceptance is pending.

@@ -1,0 +1,73 @@
+# Хилер: перед START выполните автопоиск HP/MP/CP и пати в окне хилера.
+# Профили привязаны к размеру окна. Нужна прошивка HID_PILOT_V2.
+# Выделение ведущего одним ЛКМ, F1 подходит к нему на игровую дистанцию 400.
+set follow_slot 1
+set follow_seconds 4
+set follow_key F1
+set cursor_jitter 0.15
+set party_click_jitter 0.001
+set mp_buff_key F11
+set mp_buff_cooldown 900
+set mp_buff_cast 1
+set mp_buff2_key F10
+set mp_buff2_cooldown 900
+set mp_buff2_cast 1
+set invocation_mp 0.60
+set maintain_hp 0.70
+set support_start_delay 30
+set stun_probe_key SPACE
+set stun_probe_hold_ms 500
+set stun_probe_timeout 30
+set single_hp 0.50
+set single_damage 0.10
+set balance_gap 0.35
+set burst_seconds 1
+set poll_seconds 0.2
+set max_seconds 36000
+
+set balance_key 1
+set battle_key 2
+set major_key 3
+set mass_major_key F2
+set group_key F6
+set avatar_key NUM7
+set invocation_key -
+
+# Собственная панель выделяется ЛКМ. Recharge/CP выключены: таких скиллов нет.
+set allow_ore true
+set critical_hp 0.35
+set danger_hp 0.50
+set heal_hp 0.80
+set rapid_drop 0.08
+set low_mp 0.10
+set minimum_cast_mp 0.02
+set quiet_seconds 5
+set chase_seconds 30
+# При лимите или потере ведущего бег отменяется нажатием S на 1 секунду.
+set chase_probe_seconds 3
+set exclude_seconds 15
+set retry_seconds 5
+
+# Откаты, сообщённые пользователем; не уменьшаются формулой casting speed.
+set balance_cooldown 30
+set avatar_cooldown 1200
+set invocation_cooldown 300
+
+# Ориентир aCis: base * 333 / speed, минимум 0.5 с; точность для LU4 не подтверждена.
+# Используем нижнюю границу 850–1100, без ускорения от spiritshots, с запасом.
+# При падении casting speed ниже 850 измените параметр перед запуском.
+set casting_speed 1100
+set shot_multiplier 1
+set cast_margin 0.25
+set verify_seconds 0.3
+set balance_base_cast 5
+set battle_base_cast 2
+set major_base_cast 5
+set mass_major_base_cast 7
+set group_base_cast 7
+set avatar_base_cast 4
+set invocation_base_cast 2
+# Ограничение частоты повторных попыток обычных скиллов; уточняется по live-логам.
+set regular_cooldown 1
+
+healer "farm-bars.json" "party.json"

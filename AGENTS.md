@@ -1,7 +1,7 @@
 # L2 Agent — Codex Instructions
 
 ## Project goal
-Build a Windows-native agent that can play Lineage 2 on the LU4 server through a Parsec client window. The game itself runs on a remote Windows machine; all observation and control happen locally through the Parsec window.
+Build a Windows-native agent that can play Lineage 2 on the LU4 server through a local client or Parsec window. Observation supports selectable CV or passive game-network capture on the machine running the game. Control remains normal keyboard/mouse input through the validated controller.
 
 ## Hardware constraints
 - OS: Windows
@@ -199,9 +199,11 @@ Before autonomous mode:
 - action durations are bounded
 - focus/window state is checked
 
-Do not implement anti-cheat bypasses, process injection, memory reading, packet manipulation, or game-client tampering. The project observes pixels and controls normal keyboard/mouse input only.
+Passive capture of the user's game connection is permitted as an optional WorldState source (user decision, 2026-10-03). CV remains the default and operates independently. Capture must use an explicit connection filter, bounded storage and duration. Unknown protocols, missing packets and stale observations must never produce invented state. Network mode must not silently fall back to CV. Capture runs on the game machine, not the Parsec viewer machine.
+Do not implement anti-cheat or license bypasses, process injection, memory reading, packet modification/injection/replay to the server, or game-client tampering. Network observation does not authorize network control. Do not commit traffic captures or authentication material.
 
 ## Development style for Codex
+- Не пересобирайте поставку при доработках или тестировании функционала. Сборка EXE, релизных архивов и обновление dist выполняются только отдельным релизом по прямому запросу пользователя. Обычный запрос на изменение или проверку функционала не разрешает сборку поставки.
 - Read docs/ARCHITECTURE.md and docs/ROADMAP.md before large changes.
 - Prefer small, testable modules.
 - Add tests with every behavior change.

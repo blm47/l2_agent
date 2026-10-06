@@ -1,0 +1,23 @@
+{
+  "circuitpython_version": "10.3.1",
+  "assets": {
+    "raspberry_pi_pico.uf2": {
+      "url": "https://downloads.circuitpython.org/bin/raspberry_pi_pico/en_US/adafruit-circuitpython-raspberry_pi_pico-en_US-10.3.1.uf2",
+      "sha256": "1e3134de1f2ea2bd1d46019e90781fa5bd95ea518b6665717cb256a9327a563a",
+      "size": 1959424,
+      "retrieved_at": "2026-10-05T07:42:19.942575+00:00"
+    },
+    "raspberry_pi_pico_w.uf2": {
+      "url": "https://downloads.circuitpython.org/bin/raspberry_pi_pico_w/en_US/adafruit-circuitpython-raspberry_pi_pico_w-en_US-10.3.1.uf2",
+      "sha256": "dad7ba4f22ef7856c9195b09d136908d76c7485b22a70f228b5ea705997e4451",
+      "size": 3092992,
+      "retrieved_at": "2026-10-05T07:42:19.958573+00:00"
+    },
+    "flash_nuke.uf2": {
+      "url": "https://datasheets.raspberrypi.com/soft/flash_nuke.uf2",
+      "sha256": "f3c3b6a62d2d7e944f336bc2ec73393f00adfbb56b6fa7440ba7ee3d5ad5b49d",
+      "size": 114688,
+      "retrieved_at": "2026-10-05T07:42:19.959575+00:00"
+    }
+  }
+}

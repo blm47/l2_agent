@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from l2_agent.action_controller import ActionController
+from l2_agent.advisory import LLMProvider, LocalChatProvider
+from l2_agent.advisory_panel import AdvisoryPanel
 from l2_agent.bar_detection import BarProposal
 from l2_agent.bar_parser import perceive_bars
 from l2_agent.bar_worker import BarDetectionWorker
@@ -59,8 +61,13 @@ MOUSE_TESTS = {
 
 class MainWindow(QMainWindow):
     def __init__(self, roi_path: Path = DEFAULT_ROI_PATH, pico_port: str | None = None,
-                 detector_path: Path | None = None) -> None:
+                 detector_path: Path | None = None,
+                 llm_provider: LLMProvider | None = None,
+                 world_source: str = "cv") -> None:
         super().__init__()
+        if world_source not in {"cv", "network"}:
+            raise ValueError("Неизвестный источник WorldState")
+        self.world_source = world_source
         self.roi_path = roi_path
         self.dataset_path = DEFAULT_DATASET_PATH
         self._dataset_target: tuple[int, int] | None = None
@@ -95,7 +102,7 @@ class MainWindow(QMainWindow):
         self._pending_epoch = -1
         self._pending_test = ""
         self._shown_sequence = -1
-        self.setWindowTitle("L2 Agent — M1 / настройка восприятия")
+        self.setWindowTitle("L2 Agent — M2 / advisory mode")
         self.resize(1000, 900)
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -163,6 +170,17 @@ class MainWindow(QMainWindow):
         self.world_status = QLabel("WorldState: нет свежего кадра")
         self.world_status.setWordWrap(True)
         layout.addWidget(self.world_status)
+        self.world_source_selector = QComboBox()
+        self.world_source_selector.addItem("WorldState: CV", "cv")
+        self.world_source_selector.addItem("WorldState: сеть (декодер LU4 не подключён)", "network")
+        self.world_source_selector.setCurrentIndex(0 if world_source == "cv" else 1)
+        self.world_source_selector.currentIndexChanged.connect(self.change_world_source)
+        layout.addWidget(self.world_source_selector)
+        self.advisory_panel = AdvisoryPanel(
+            llm_provider or LocalChatProvider("Ternary-Bonsai-2-27B-PTQ1_0.gguf"),
+            lambda: self.world_state,
+        )
+        layout.addWidget(self.advisory_panel)
         self.dataset_button = QPushButton("Сохранить кадр для разметки через 3 секунды")
         self.dataset_button.clicked.connect(self.schedule_dataset_sample)
         layout.addWidget(self.dataset_button)
@@ -405,12 +423,27 @@ class MainWindow(QMainWindow):
         self.preview.detections = ()
         self.detector_status.setText("Детектор: нет свежего кадра")
         self.world_state = None
-        self.world_status.setText("WorldState: нет свежего кадра")
+        self.world_status.setText(
+            "WorldState: сеть недоступна — декодер LU4 не подключён"
+            if self.world_source == "network" else "WorldState: нет свежего кадра"
+        )
         self.world_status.setToolTip("")
         self.preview.bar_text = {}
         self.preview.update()
 
+    def change_world_source(self) -> None:
+        self.stop_input("PAUSE — смена источника WorldState")
+        self.world_source = self.world_source_selector.currentData()
+        self.clear_world_state()
+        if self.world_source == "network":
+            self.world_status.setText("WorldState: сеть недоступна — декодер LU4 не подключён")
+        logger.info("Источник WorldState изменён: %s", self.world_source)
+
     def update_world_state(self, frame: CapturedFrame) -> None:
+        if self.world_source == "network":
+            self.clear_world_state()
+            self.world_status.setText("WorldState: сеть недоступна — декодер LU4 не подключён")
+            return
         profile = None if self._proposals or self._auto_force else self.roi_profile
         state = perceive_bars(frame, profile)
         detection = (
@@ -494,6 +527,7 @@ class MainWindow(QMainWindow):
             editor.deleteLater()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.advisory_panel.timer.stop()
         if self.detector is not None:
             self.detector.close()
         self.dataset_timer.stop()

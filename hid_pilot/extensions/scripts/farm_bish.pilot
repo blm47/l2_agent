@@ -1,0 +1,35 @@
+# Настройки клавиш, порогов и задержек.
+# Макрос 2 выбирает себя и лечит; после лечения цель выбирается заново.
+set next_target 6
+set attack F
+set melee F
+set loot C
+set heal 8
+set rest =
+set pickup_loot true
+set target_threshold 0.10
+set hp_threshold 0.50
+set mp_threshold 0.10
+set mp_resume 0.90
+set attack_delay 1
+set heal_delay 2
+set target_delay 0.7
+set approach_delay 4
+set loot_delay 0.7
+set loot_attempts 3
+set target_attempts 10
+set combat_timeout 60
+# Если урон не проходит, клавиша melee запускает сближение с целью.
+set stuck_timeout 5
+set reposition_delay 3
+set reposition_attempts 3
+set progress_epsilon 0.002
+set rest_timeout 120
+set heal_attempts 5
+set cycles 1000
+set max_seconds 36000
+
+# Перед запуском выполните общий автопоиск HP/MP/CP, цели и пати.
+# Проверьте найденные области и сохраните результат.
+# Персонаж перед стартом должен стоять, а не сидеть.
+farm "farm-bars.json"

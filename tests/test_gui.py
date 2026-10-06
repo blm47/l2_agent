@@ -87,6 +87,15 @@ def test_gui_tracks_window_and_handles_disappearance(monkeypatch, tmp_path, pico
         window.update_preview()
         assert window.world_state.frame_id == 1
         assert window.world_state.player.hp.value is None
+        window.world_source_selector.setCurrentIndex(1)
+        assert window.world_state is None
+        window.update_world_state(capture.latest.return_value.frame)
+        assert window.world_state is None
+        assert "LU4" in window.world_status.text()
+        assert window.preview.detections == ()
+        window.world_source_selector.setCurrentIndex(0)
+        window.update_world_state(capture.latest.return_value.frame)
+        assert window.world_state.frame_id == 1
         detector = Mock()
         observation = ObjectObservation(
             ready=True, frame_id=1, timestamp=capture.latest.return_value.frame.timestamp,

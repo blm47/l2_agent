@@ -1,0 +1,45 @@
+# Хилер париков. Сохраните рядом с подтверждёнными farm-bars.json и party.json.
+# tank_slot 0 — последняя видимая строка при первом достоверном наблюдении.
+# Для явного выбора танка задайте номер 1–8. Следование после боя — первая строка.
+set tank_slot 0
+set follow_slot 1
+set follow_seconds 7
+set party_click_jitter 0.001
+set mp_buff_key F11
+set mp_buff_cooldown 900
+set mp_buff_cast 1
+set mp_buff2_key F10
+set mp_buff2_cooldown 900
+set mp_buff2_cast 1
+set stun_probe_key SPACE
+set stun_probe_hold_ms 500
+set stun_probe_timeout 30
+set stun_probe_during_collect false
+set casting_speed 1100
+set regular_cooldown 2
+set collect_poll_seconds 0.1
+set combat_poll_seconds 0.2
+set collect_min_damage 0.005
+set collect_max_damage 0.05
+set arrival_damage 0.10
+set emergency_hp 0.10
+set healthy_hp 0.90
+set fight_quiet_seconds 3
+set balance_key 1
+set battle_key 2
+set major_key 3
+set group_key F6
+set mass_major_key F2
+set purify_key F4
+set purify_base_cast 3
+set purify_cooldown 4
+set single_hp 0.50
+set maintain_hp 0.70
+set support_start_delay 30
+set single_damage 0.10
+set balance_gap 0.35
+set burst_seconds 1
+set allow_ore true
+set max_seconds 36000
+
+healer_train "farm-bars.json" "party.json" "paralysis.json"

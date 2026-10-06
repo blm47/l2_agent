@@ -1,5 +1,15 @@
 # Architecture
 
+## M2: advisory integration
+
+`AdvisoryPanel` takes a fresh WorldState snapshot and user goal on explicit
+request. A single background request calls the `LLMProvider` protocol.
+`LocalChatProvider` uses a separately running local chat completions server,
+configurable for Bonsai or Qwen, with JSON schema plus strict local validation.
+The panel only displays historical advice and telemetry; neither provider nor
+panel receives an ActionController or emits executable actions.
+See [M2_ADVISORY.md](M2_ADVISORY.md) for limits and pending acceptance.
+
 ## M1: local detector dataset collection
 
 The GUI can save a single original frame after a three-second delay. Collection
@@ -24,7 +34,10 @@ L2 Agent may:
 - send keyboard/mouse input through Win32 SendInput
 - store local knowledge, memory, and trajectories
 
-L2 Agent must not depend on reading game process memory, network packets, or client internals.
+CV remains the default independent source. An optional passive network source may observe
+the user's game TCP connection on the game machine (ADR-023). Memory reading,
+client tampering and network control remain excluded. See NETWORK_STATE.md for
+implementation status and the pending LU4 decoder.
 
 ## 2. High-level data flow
 

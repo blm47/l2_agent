@@ -2,6 +2,18 @@
 
 Use this file for concise architecture decisions.
 
+## ADR-009 — M2 local advisory provider
+Status: accepted for initial implementation; runtime validation pending
+
+WorldState and a user goal go to an LLMProvider protocol backed initially by a
+separate local chat completions server. Bonsai and fallback Qwen use the same
+configurable adapter; no runtime SDK or second loaded model is required.
+Responses must pass a strict discriminated skill schema. The GUI requests one
+historical recommendation at a time on a background thread. No advisory
+component receives an input controller. M3 execution remains separate future work.
+
+See `M2_ADVISORY.md` for telemetry semantics and unverified hardware criteria.
+
 ## ADR-022 — Versioned expanded detector classes
 Status: implemented, 2026-09-26
 
@@ -376,3 +388,18 @@ Collect trajectories before selecting a learning method.
 
 Reason:
 Reliable perception/action data is a prerequisite for meaningful policy learning.
+
+
+## ADR-023 - Selectable CV or passive network WorldState
+Status: accepted by user, 2026-10-03; implementation partial
+
+The user authorized passive observation of the local LU4 game connection.
+CV remains the independent default. Switching clears WorldState and pauses
+input; no silent fallback or blending. Network observation does not authorize
+network control, client tampering or license/anti-cheat bypasses.
+
+Initial implementation: GUI/CLI selector and bounded single-connection capture
+through external dumpcap. No driver is installed automatically. LU4 decoding,
+TCP reassembly and network WorldState are pending verified protocol samples.
+Unavailable network data produces no snapshot. Adrenaline binaries are unused.
+M2 remains active. See NETWORK_STATE.md for the remaining work.

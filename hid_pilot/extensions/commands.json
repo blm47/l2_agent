@@ -1,0 +1,25 @@
+{
+  "api_version": 1,
+  "commands": {
+    "healer_train": {
+      "arguments": 3,
+      "config": "hid_pilot.train_healer:TrainConfig",
+      "prepare": "hid_pilot.train_runtime:prepare_extension",
+      "run": "hid_pilot.train_runtime:run_extension",
+      "exclusive_observer": true
+    },
+    "healer": {
+      "arguments": 2,
+      "config": "hid_pilot.healer:HealerConfig",
+      "prepare": "hid_pilot.healer_runtime:prepare_extension",
+      "run": "hid_pilot.healer_runtime:run_extension",
+      "exclusive_observer": true
+    },
+    "farm": {
+      "arguments": 1,
+      "config": "hid_pilot.farm:FarmConfig",
+      "prepare": "hid_pilot.farm:prepare_extension",
+      "run": "hid_pilot.farm:run_extension"
+    }
+  }
+}
