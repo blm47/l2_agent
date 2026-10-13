@@ -3,6 +3,7 @@
 """
 
 import logging
+import random
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -38,6 +39,7 @@ class ReacquireTarget(Exception):
 
 class FarmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    humanize: bool = True
     next_target: str = "3"
     attack: str = "R"
     melee: str = "4"
@@ -87,6 +89,7 @@ class Farmer:
     def __init__(self, controller: ActionController, profile: BarProfile, config: FarmConfig,
                  notify: Callable[[str], None], clock: Callable[[], float] = time.monotonic) -> None:
         self.controller = controller
+        self.controller.humanize = config.humanize
         if controller.transport.protocol == "L2_PICO_V1" and "=" in (
             config.next_target, config.attack, config.melee, config.loot, config.heal, config.rest
         ):
@@ -217,6 +220,8 @@ class Farmer:
                 self.target_pending = target > 0
 
     def guarded_wait(self, seconds: float) -> None:
+        if self.config.humanize:
+            seconds += random.uniform(0, min(.1, seconds * .1))
         deadline = self.clock() + seconds
         while self.clock() < deadline:
             self.controller.wait(min(.3, deadline - self.clock()))

@@ -12,7 +12,6 @@ import numpy as np
 from hid_pilot.bars import BarProfile, bar_fraction
 from hid_pilot.desktop import Desktop, FocusLost
 from hid_pilot.healer_observer import HealerObserver, HealerReader
-from hid_pilot.numbers import shared_numbers
 from hid_pilot.paralysis import ParalysisDetector
 from hid_pilot.party import PartyProfile
 from hid_pilot.train_healer import TrainSnapshot
@@ -29,7 +28,9 @@ class TrainReader(HealerReader):
         self.own_values: dict[str, float | None] = {}
 
     def update_own(self, image: np.ndarray, at: float) -> None:
-        values = {kind: super(TrainReader, self).resource(image, kind) for kind in ("hp", "mp", "cp")}
+        super().update_own(image, at)
+        with self.profile_lock:
+            values = {kind: self.own_cache.get(kind, (at, None))[1] for kind in ("hp", "mp", "cp")}
         with self.own_lock:
             self.own_values = values
             self.own_at = at
@@ -45,10 +46,11 @@ class TrainReader(HealerReader):
         return None
 
     def read(self, image: np.ndarray, at: float) -> TrainSnapshot:
-        state = super().read(image, at)
-        slots = tuple(member.slot for member in state.members)
-        paralyzed = self.detector.read(image, slots)
-        return TrainSnapshot(**state.model_dump(), paralyzed_slots=paralyzed, debuffs_known=True)
+        with self.profile_lock:
+            state = super().read(image, at)
+            slots = tuple(member.slot for member in state.members)
+            paralyzed = self.detector.read(image, slots)
+            return TrainSnapshot(**state.model_dump(), paralyzed_slots=paralyzed, debuffs_known=True)
 
 
 class TrainObserver(HealerObserver):
@@ -65,22 +67,7 @@ class TrainObserver(HealerObserver):
         self.start_identity()
 
     def _own_loop(self) -> None:
-        try:
-            shared_numbers().prepare()
-            while not self.stop_event.is_set():
-                if self.paused():
-                    self.stop_event.wait(.05)
-                    continue
-                try:
-                    with shared_numbers().lock:
-                        at = time.monotonic()
-                        image = self.desktop.capture()
-                        self.reader.update_own(image, at)
-                except FocusLost:
-                    pass
-                self.stop_event.wait(.2)
-        except Exception:
-            logger.exception("Собственный OCR парика недоступен; используются только свежие полосы")
+        super()._own_loop()
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
@@ -92,6 +79,7 @@ class TrainObserver(HealerObserver):
                 image = self.desktop.capture()
                 with self.lock:
                     self.identity_image = image
+                    self.identity_at = at
                 state = self.reader.read(image, at)
                 with self.lock:
                     self.samples.append(state)

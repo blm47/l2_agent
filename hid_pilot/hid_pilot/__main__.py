@@ -5,8 +5,8 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QFontDatabase
+from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QFontDatabase, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -62,7 +62,10 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("HID Pilot — текстовые сценарии / Pico")
-        self.resize(850, 850)
+        available = self.screen().availableGeometry()
+        self.resize(min(1180, available.width()), min(1300, available.height() - 40))
+        self.layout_settings = QSettings(str(user_data_dir() / "window-layout.ini"), QSettings.Format.IniFormat)
+        self.layout_restored = False
         self.path: Path | None = None
         self.controller: ActionController | None = None
         self.worker: threading.Thread | None = None
@@ -113,7 +116,8 @@ class MainWindow(QMainWindow):
         self.script_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.script_splitter.addWidget(self.editor)
         self.script_splitter.addWidget(self.party_state)
-        self.script_splitter.setSizes([500, 330])
+        self.script_splitter.setStretchFactor(0, 2)
+        self.script_splitter.setStretchFactor(1, 3)
         script_layout.addWidget(self.script_splitter, 1)
         self.party.updated.connect(self.party_state.setPlainText)
         row = QHBoxLayout()
@@ -168,9 +172,8 @@ class MainWindow(QMainWindow):
         self.log_splitter.setChildrenCollapsible(False)
         self.log_splitter.addWidget(body)
         self.log_splitter.addWidget(self.journal)
-        self.log_splitter.setStretchFactor(0, 1)
-        self.log_splitter.setStretchFactor(1, 0)
-        self.log_splitter.setSizes([700, 90])
+        self.log_splitter.setStretchFactor(0, 2)
+        self.log_splitter.setStretchFactor(1, 1)
         self.log_splitter.handle(1).setToolTip("Потяните, чтобы изменить высоту журнала")
         self.setCentralWidget(self.log_splitter)
         file_menu = self.menuBar().addMenu("Файл")
@@ -180,6 +183,41 @@ class MainWindow(QMainWindow):
         pico_menu = self.menuBar().addMenu("Pico контроллер")
         pico_menu.addAction("Прошивка / сброс / проверка…", self.open_firmware)
         self.refresh()
+        tab = self.layout_settings.value("tab", 1, type=int)
+        self.tabs.setCurrentIndex(tab if 0 <= tab < self.tabs.count() else 1)
+        self.port.setText(self.layout_settings.value("port", "COM4", type=str))
+        self.auto_scope.setCurrentIndex(0 if self.layout_settings.value("upper_scope", True, type=bool) else 1)
+        level = self.layout_settings.value("log_level", "INFO", type=str)
+        self.log_level.setCurrentText(level if level in {"INFO", "DEBUG"} else "INFO")
+        geometry = self.layout_settings.value("geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if self.layout_restored:
+            return
+        self.layout_restored = True
+        # Пропорции скриншота применяем после расчёта размеров видимых панелей.
+        for name, splitter, weights in (
+                ("script", self.script_splitter, (2, 3)),
+                ("journal", self.log_splitter, (2, 1))):
+            saved = self.layout_settings.value(name)
+            if saved is None or not splitter.restoreState(saved):
+                extent = splitter.width() if name == "script" else splitter.height()
+                splitter.setSizes([extent * weight // sum(weights) for weight in weights])
+
+    def save_layout(self) -> None:
+        self.layout_settings.setValue("geometry", self.saveGeometry())
+        self.layout_settings.setValue("tab", self.tabs.currentIndex())
+        self.layout_settings.setValue("port", self.port.text())
+        self.layout_settings.setValue("upper_scope", self.auto_scope.currentData())
+        self.layout_settings.setValue("log_level", self.log_level.currentText())
+        self.layout_settings.setValue("script", self.script_splitter.saveState())
+        self.layout_settings.setValue("journal", self.log_splitter.saveState())
+        self.layout_settings.sync()
+        if self.layout_settings.status() != QSettings.Status.NoError:
+            logger.warning("Не удалось сохранить размеры окна и панелей")
 
     def open_examples(self) -> None:
         os.startfile(example_scripts_dir())
@@ -628,6 +666,7 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self.hotkey.close()
+        self.save_layout()
         event.accept()
 
 

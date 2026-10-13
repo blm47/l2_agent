@@ -95,15 +95,16 @@ def test_pause_during_probe_discards_effect_baseline_and_recovery_timer(monkeypa
     assert not healer.policy.probe_baseline
 
 
-def test_train_collect_and_unknown_never_probe_but_combat_does():
+def test_train_mass_effect_failure_never_starts_follow_or_space_probe():
     policy = collecting(.3)
     policy.stun_suspected = True
-    assert policy.decide(state(2.7, tank=.3), 2.7).kind == "wait"
+    assert policy.decide(state(2.7, tank=.3), 2.7).skill == "group"
     assert policy.phase == TrainPhase.COLLECT
     policy.phase = TrainPhase.UNKNOWN
-    assert policy.decide(state(2.8, tank=.3), 2.8).kind == "wait"
+    assert policy.decide(state(2.8, tank=.3), 2.8).skill == "group"
     policy.phase = TrainPhase.COMBAT
-    assert policy.decide(state(2.9, tank=.3), 2.9).kind == "probe"
+    result = policy.decide(state(2.9, tank=.3), 2.9)
+    assert result.kind == "cast" and result.target is None
 
 
 def test_train_probe_is_cancelled_when_phase_disallows_it(monkeypatch, tmp_path):
@@ -117,12 +118,12 @@ def test_train_probe_is_cancelled_when_phase_disallows_it(monkeypatch, tmp_path)
 
 
 def test_train_self_buff_is_enabled_and_allowed_after_start_delay_during_collect():
-    policy = collecting(.3)
+    policy = collecting(.8)
     assert policy.config.mp_buff_key == "F11"
     for tick in range(27, 300):
-        policy.ingest(state(tick / 10, tank=.3))
-    assert policy.decide(state(29.9, tank=.3), 29.9).skill != "mp_buff"
-    result = policy.decide(state(30., tank=.3), 30.)
+        policy.ingest(state(tick / 10, tank=.8))
+    assert policy.decide(state(29.9, tank=.8), 29.9).skill != "mp_buff"
+    result = policy.decide(state(30., tank=.8), 30.)
     assert (result.skill, result.target) == ("mp_buff", None)
 
 
@@ -137,4 +138,4 @@ def test_purify_without_observed_effect_can_trigger_stun_suspicion():
     for tick in range(1, 11):
         policy.ingest(state(tick * .2, paralyzed=(2,)))
     assert policy.stun_suspected
-    assert policy.decide(state(2., paralyzed=(2,)), 2.).kind == "probe"
+    assert policy.decide(state(2., paralyzed=(2,)), 2.).skill == "purify"

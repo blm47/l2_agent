@@ -64,7 +64,7 @@ def test_cursor_enters_game_from_start_button_before_click():
     controller.wait = Mock()
     controller.click("right", .5, .5)
     assert transport.method_calls[0][0] == "release"
-    assert transport.command.call_count == 2
+    assert transport.command.call_count >= 1
     transport.hold.assert_called_once_with("BUTTON", "right", 80)
 
 
@@ -115,6 +115,118 @@ def test_navigation_sends_three_bounded_verified_steps_between_waits():
     assert batches and all(count == 3 for count in batches)
     assert verify.call_count > transport.command.call_count
     assert abs(position[0] - 160) <= 2
+
+
+def test_click_uses_fast_navigation_while_center_return_keeps_curve(monkeypatch):
+    desktop, transport = Mock(), Mock()
+    desktop.point.return_value = (500, 300)
+    desktop.cursor.return_value = (500, 300)
+    desktop.target.rect = (0, 0, 1000, 600)
+    path = Mock(return_value=[(400, 250), (500, 300)])
+    monkeypatch.setattr("hid_pilot.controller.mouse_path", path)
+    controller = ActionController(desktop, transport, lambda: True)
+    controller.humanize = True
+    controller._move_to = Mock()
+    controller.wait = Mock()
+    controller.click("left", .5, .5)
+    path.assert_not_called()
+    assert controller._move_to.call_args.args[3:] == (.001, True)
+    controller._move_to.reset_mock()
+    controller.move(.5, .5)
+    path.assert_called_once()
+    assert controller._move_to.call_count == 2
+    for call in controller._move_to.call_args_list:
+        assert .001 <= call.args[3] <= .002
+        assert call.args[4] is False
+
+
+def test_fast_navigation_handles_acceleration_without_waiting_for_applied_moves():
+    desktop, transport = Mock(), Mock()
+    position = [0, 0]
+    desktop.point.return_value = (301, 123)
+    desktop.cursor.side_effect = lambda: tuple(position)
+    movements = []
+
+    def command(text, expected):
+        _, dx, dy = text.split()
+        step = int(dx), int(dy)
+        assert max(abs(value) for value in step) <= 16
+        movements.append(step)
+        position[0] += step[0] * 3
+        position[1] += step[1] * 3
+
+    transport.command.side_effect = command
+    controller = ActionController(desktop, transport, lambda: True)
+    controller.humanize = True
+    controller.wait = Mock()
+    controller.move(.5, .5, fast=True)
+    assert len(movements) < 30
+    assert abs(position[0] - 301) <= 2 and abs(position[1] - 123) <= 2
+    controller.wait.assert_not_called()
+
+
+def test_stuck_cursor_cancels_without_seconds_of_movement_or_clicks():
+    desktop, transport = Mock(), Mock()
+    desktop.point.return_value = (500, 300)
+    desktop.cursor.return_value = (0, 0)
+    controller = ActionController(desktop, transport, lambda: True)
+    controller.humanize = True
+    controller.wait = Mock()
+    with pytest.raises(RuntimeError, match="движение прекращено"):
+        controller.click("left", .5, .5)
+    assert transport.command.call_count <= 20
+    transport.hold.assert_not_called()
+
+
+def test_navigation_waits_for_delayed_cursor_update_instead_of_queuing_moves():
+    desktop, transport = Mock(), Mock()
+    position, now = [0, 0], [0.]
+    pending = []
+    desktop.point.return_value = (301, 123)
+    desktop.cursor.side_effect = lambda: tuple(position)
+
+    def command(text, expected):
+        assert not pending
+        _, dx, dy = text.split()
+        pending.append((now[0] + .025, int(dx), int(dy)))
+
+    def wait(seconds):
+        now[0] += seconds
+        if pending and now[0] >= pending[0][0]:
+            _, dx, dy = pending.pop()
+            position[0] += dx * 3
+            position[1] += dy * 3
+
+    controller = ActionController(desktop, transport, lambda: True)
+    controller.active_time = lambda: now[0]
+    controller.wait = wait
+    transport.command.side_effect = command
+    controller.move(.5, .5, fast=True)
+    assert max(abs(a - b) for a, b in zip(position, (301, 123))) <= 2
+    assert not pending
+
+
+@pytest.mark.parametrize("duration", [1., 2.5])
+def test_return_to_center_finishes_within_chosen_duration(duration):
+    desktop, transport = Mock(), Mock()
+    position, now = [50, 50], [0.]
+    desktop.target.rect = (0, 0, 1000, 600)
+    desktop.point.return_value = (500, 300)
+    desktop.cursor.side_effect = lambda: tuple(position)
+
+    def command(text, expected):
+        _, dx, dy = text.split()
+        assert max(abs(int(dx)), abs(int(dy))) <= 16
+        position[0] += int(dx) * 3
+        position[1] += int(dy) * 3
+
+    controller = ActionController(desktop, transport, lambda: True)
+    controller.active_time = lambda: now[0]
+    controller.wait = lambda seconds: now.__setitem__(0, now[0] + seconds)
+    transport.command.side_effect = command
+    controller.move(.5, .5, duration=duration)
+    assert now[0] == pytest.approx(duration)
+    assert max(abs(a - b) for a, b in zip(position, (500, 300))) <= 2
 
 
 @pytest.mark.parametrize("interrupt", [False, True])

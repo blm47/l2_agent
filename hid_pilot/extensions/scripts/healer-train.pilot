@@ -1,11 +1,32 @@
 # Хилер париков. Сохраните рядом с подтверждёнными farm-bars.json и party.json.
 # tank_slot 0 — последняя видимая строка при первом достоверном наблюдении.
-# Для явного выбора танка задайте номер 1–8. Следование после боя — первая строка.
+# Для явного выбора танка задайте номер 1–8. Следование включено во всех фазах.
+# Массовый хил с места; одиночный — после наблюдаемого эффекта по участнику.
+# После лечебного каста — случайная W/A/S/D на 1000 мс, независимо от humanize.
 set tank_slot 0
+set invocation_mp 0.80
+set quiet_seconds 30
 set follow_slot 1
-set follow_seconds 7
+set follow_seconds 2.5
+set follow_key 9
+set follow_select_mouse false
 set party_click_jitter 0.001
 set mp_buff_key F11
+set humanize true
+set chain_heals true
+set cancel_unneeded_casts false
+set self_rescue_key 4
+set self_rescue_cast 0.2
+set self_rescue_cooldown 8
+set aura_enabled true
+set aura_key F8
+set aura_cast 0.3
+set area_heal_key SPACE
+set area_heal_cast 0.4
+set area_heal_cooldown 25
+set heal_press_interval 0.15
+set auto_loot false
+set loot_key C
 set mp_buff_cooldown 900
 set mp_buff_cast 1
 set mp_buff2_key F10
@@ -22,13 +43,15 @@ set combat_poll_seconds 0.2
 set collect_min_damage 0.005
 set collect_max_damage 0.05
 set arrival_damage 0.10
-set emergency_hp 0.10
+set emergency_hp 0.16
+set collect_heal_hp 0.30
 set healthy_hp 0.90
 set fight_quiet_seconds 3
 set balance_key 1
 set battle_key 2
 set major_key 3
 set group_key F6
+set group_buff_seconds 15
 set mass_major_key F2
 set purify_key F4
 set purify_base_cast 3

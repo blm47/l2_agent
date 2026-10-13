@@ -33,7 +33,7 @@ def test_missing_hp_emergency_does_not_balance_in_unknown_train_phase():
     assert policy.phase == TrainPhase.UNKNOWN
 
 
-def test_train_missing_hp_emergency_continues_following_without_balance():
+def test_train_missing_hp_emergency_keeps_following():
     policy = collecting()
     for index in range(151):
         at = 2.7 + index * .1
@@ -52,11 +52,11 @@ def test_train_departed_members_are_excluded_and_phase_can_recover():
     assert policy.phase == TrainPhase.IDLE
 
 
-@pytest.mark.parametrize("tank", [.3, .2, .1])
-def test_collecting_low_tank_is_not_healed_purified_or_followed(tank):
+@pytest.mark.parametrize("tank", [.3, .4])
+def test_collecting_low_tank_receives_mass_heal_without_selection(tank):
     policy = collecting(tank)
     decision = policy.decide(state(2.7, tank=tank, paralyzed=(3,)), 2.7)
-    assert decision.kind == "wait"
+    assert (decision.skill, decision.target) == ("group", None)
     assert policy.phase == TrainPhase.COLLECT
     assert policy.config.poll_seconds == .1
 
@@ -79,14 +79,13 @@ def test_tank_assignment_stays_on_bound_last_slot_when_members_disappear():
     assert policy.phase == TrainPhase.UNKNOWN
 
 
-def test_returning_tank_burst_needs_two_ticks_then_prefers_balance():
+def test_strong_damage_before_mass_attempt_keeps_mass_heal_priority():
     policy = collecting(.3)
     first = policy.decide(state(2.7, tank=.24), 2.7)
-    assert first.kind == "wait"
-    assert policy.phase == TrainPhase.COLLECT
+    assert (first.skill, first.target) == ("group", None)
     decision = policy.decide(state(2.8, tank=.19), 2.8)
-    assert policy.phase == TrainPhase.COMBAT
-    assert (decision.skill, decision.target) == ("balance", None)
+    assert policy.phase == TrainPhase.COLLECT
+    assert (decision.skill, decision.target) == ("group", None)
 
 
 def test_emergency_under_ten_percent_can_balance_during_collection():
@@ -97,12 +96,17 @@ def test_emergency_under_ten_percent_can_balance_during_collection():
 
 
 def test_combat_rescue_alternates_battle_and_major_while_cooldowns_are_active():
-    policy = TrainPolicy(TrainConfig(), 0.)
+    policy = TrainPolicy(TrainConfig(group_cast=.1, verify_seconds=.1), 0.)
+    initial = state(2.3, tank=.25)
+    policy.ingest(initial)
+    policy.committed(HealDecision(kind="cast", skill="group", reason="test"), initial, 2.3)
     policy.ingest(state(2.4, tank=.2))
     policy.phase = TrainPhase.COMBAT
     policy.ingest(state(2.5, tank=.16))
     policy.ingest(state(2.6, tank=.12))
     policy.arrival_pending = True
+    policy.reachable_until["@slot3"] = 10.
+    policy.ready_at["area_heal"] = 30.
     policy.ready_at["balance"] = 30.
     snapshot = state(2.7, tank=.095)
     first = policy.decide(snapshot, 2.7)
@@ -115,20 +119,20 @@ def test_combat_rescue_alternates_battle_and_major_while_cooldowns_are_active():
     assert (second.skill, second.target) == ("major", "@slot3")
 
 
-def test_collecting_emergency_only_allows_balance_or_battle():
+def test_collecting_emergency_uses_space_when_balance_unavailable():
     policy = collecting(.095)
     policy.ready_at.update(balance=30., battle=30.)
     result = policy.decide(state(2.7, tank=.095), 2.7)
-    assert result.kind == "wait"
+    assert (result.skill, result.target) == ("area_heal", None)
     assert policy.ready("major", 2.7)
 
 
-def test_damage_to_another_member_switches_to_normal_combat_rules():
+def test_damage_to_second_collector_keeps_mass_heal_without_follow():
     policy = collecting(.3)
     result = policy.decide(state(2.7, tank=.3, others=(.97, 1.)), 2.7)
-    assert policy.phase == TrainPhase.COMBAT
-    assert policy.config.poll_seconds == .2
-    assert result.skill == "balance"
+    assert policy.phase == TrainPhase.COLLECT
+    assert policy.config.poll_seconds == .1
+    assert result.skill == "group"
 
 
 def test_purify_skips_collecting_tank_and_uses_party_order():
@@ -152,7 +156,7 @@ def test_unknown_low_tank_is_not_mistaken_for_returned_tank():
     policy = TrainPolicy(TrainConfig(), 0.)
     result = policy.decide(state(0., tank=.25, paralyzed=(3,)), 0.)
     assert policy.phase == TrainPhase.UNKNOWN
-    assert result.kind == "wait"
+    assert (result.skill, result.target) == ("group", None)
 
 
 def test_other_member_can_receive_solo_purify_during_unknown_phase():
@@ -164,7 +168,7 @@ def test_other_member_can_receive_solo_purify_during_unknown_phase():
 def test_combat_quiet_period_restores_following_first_member():
     policy = TrainPolicy(TrainConfig(), 0.)
     policy.ingest(state(0.))
-    policy.ingest(state(.2, others=(.95, 1.)))
+    policy.ingest(state(.2, hp=.95, others=(.95, 1.)))
     assert policy.phase == TrainPhase.COMBAT
     for i in range(3, 35):
         result = policy.decide(state(i / 10), i / 10)
@@ -187,21 +191,21 @@ def test_purify_cast_and_cooldown_scale_with_casting_speed():
     assert TrainConfig(casting_speed=1500).cooldown("purify") < config.cooldown("purify")
 
 
-def test_collecting_solo_heal_does_not_touch_tank_or_use_mass_effect():
+def test_unknown_collection_can_heal_self_and_party_with_mass_effect():
     policy = collecting(.3)
     snapshot = state(2.7, tank=.3, hp=.4)
     # Пропуск наблюдения не является доказательством возвращения танка.
     snapshot = snapshot.model_copy(update={"at": 4.})
     decision = policy.decide(snapshot, 4.)
     assert policy.phase == TrainPhase.UNKNOWN
-    assert (decision.skill, decision.target) == ("major", "@self")
+    assert (decision.skill, decision.target) == ("group", None)
 
 
 def test_collecting_hp_gain_does_not_switch_to_combat():
     policy = collecting(.3)
     result = policy.decide(state(2.7, tank=.4), 2.7)
     assert policy.phase == TrainPhase.COLLECT
-    assert result.kind == "wait"
+    assert (result.skill, result.target) == ("group", None)
 
 
 def test_train_example_is_registered_and_parses():
@@ -219,13 +223,15 @@ def test_train_example_is_registered_and_parses():
     assert config.purify_key == "F4"
 
 
-def test_intermediate_tank_only_damage_never_opens_normal_healing():
+def test_intermediate_collector_damage_allows_mass_but_never_single_or_follow():
     policy = TrainPolicy(TrainConfig(), 0.)
     policy.ingest(state(0.))
     for i in range(1, 101):
         result = policy.decide(state(i / 10, tank=1. - .06 * i / 10), i / 10)
-        assert result.skill is None
-    assert policy.phase == TrainPhase.UNKNOWN
+        assert result.kind in {"wait", "cast", "follow"}
+        assert result.target is None or result.kind == "follow"
+        assert result.skill in {None, "group"}
+    assert policy.phase == TrainPhase.COLLECT
 
 
 def test_exact_five_percent_damage_is_normal_collection():

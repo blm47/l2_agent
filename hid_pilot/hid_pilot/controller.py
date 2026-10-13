@@ -1,4 +1,5 @@
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -7,6 +8,7 @@ from contextlib import contextmanager
 import numpy as np
 
 from hid_pilot.desktop import Desktop, FocusLost
+from hid_pilot.mouse_path import mouse_path
 from hid_pilot.script import KEYS
 from hid_pilot.transport import PicoTransport
 
@@ -37,6 +39,7 @@ class ActionController:
         self.notify = notify or (lambda _: None)
         self.monitor: threading.Thread | None = None
         self.error = ""
+        self.humanize = False
 
     def check(self) -> None:
         if self.stopped.is_set():
@@ -168,7 +171,10 @@ class ActionController:
                 return
             self.stopped.wait(min(0.02, remaining))
 
-    def move(self, x: float, y: float, verify: Callable[[], None] | None = None) -> None:
+    def move(self, x: float, y: float, verify: Callable[[], None] | None = None,
+             fast: bool = False, duration: float | None = None) -> None:
+        if duration is not None and not 1 <= duration <= 2.5:
+            raise ValueError("Возврат курсора должен занимать 1–2,5 секунды")
         if self.transport.protocol == "L2_PICO_V1":
             raise RuntimeError("Для движения мыши нужна прошивка HID_PILOT_V1; клавиши доступны")
         target = self.desktop.point(x, y)
@@ -176,10 +182,56 @@ class ActionController:
             self.desktop.check_point(target)
             # После START курсор может быть над GUI. Входим в игру без зажатых кнопок.
             self.transport.release()
+        if duration is not None:
+            self._timed_return(target, verify, duration)
+            return
         deadline = self.active_time() + 8
+        points = mouse_path(self.desktop.cursor(), target, self.desktop.target.rect) if self.humanize and not fast else [target]
+        interval = .001 if fast else (random.uniform(.001, .002) if self.humanize else .006)
+        for point in points:
+            self._move_to(point, verify, deadline, interval, fast)
+
+    def _timed_return(self, target: tuple[int, int], verify: Callable[[], None] | None,
+                      duration: float) -> None:
+        started = self.active_time()
+        points = mouse_path(self.desktop.cursor(), target, self.desktop.target.rect)
+        gain = [2., 2.]
+        previous = None
+        steps = [0, 0]
+        while self.active_time() - started < duration:
+            elapsed = self.active_time() - started
+            # При отставании пропускаем промежуточные точки, а не растягиваем всю дугу.
+            index = min(len(points) - 1, int(elapsed / (duration * .75) * len(points)))
+            with self.ready():
+                if verify is not None:
+                    verify()
+                current = self.desktop.cursor()
+                if previous is not None:
+                    for axis in range(2):
+                        actual = current[axis] - previous[axis]
+                        if steps[axis] and actual * steps[axis] > 0:
+                            gain[axis] = max(2., min(16., abs(actual / steps[axis])))
+                point = points[index]
+                self.desktop.check_point(point)
+                delta = point[0] - current[0], point[1] - current[1]
+                steps = [min(16, max(1, int(abs(value) / gain[axis]))) * (1 if value > 0 else -1)
+                         if abs(value) > 2 else 0 for axis, value in enumerate(delta)]
+                previous = current
+                if any(steps):
+                    self.transport.command(f"MOVE {steps[0]} {steps[1]}", "MOVED")
+            self.wait(min(.006, max(0, duration - (self.active_time() - started))))
+        # Возврат косметический: не продолжаем наведение сверх выбранного бюджета.
+        if max(abs(a - b) for a, b in zip(self.desktop.cursor(), target)) > 2:
+            logger.debug("Возврат курсора завершён по бюджету %.2f сек без достижения центра", duration)
+
+    def _move_to(self, target: tuple[int, int], verify: Callable[[], None] | None, deadline: float,
+                 interval: float = .006, fast: bool = False) -> None:
+        if self.humanize or fast:
+            self._feedback_move(target, verify, deadline, max(.003, interval))
+            return
         while self.active_time() < deadline:
             # Три шага между паузами ускоряют дальний ход без превышения лимита Pico.
-            for _ in range(3):
+            for _ in range(3 if fast or not self.humanize else 1):
                 with self.ready():
                     if verify is not None:
                         verify()
@@ -188,11 +240,70 @@ class ActionController:
                     dx, dy = target[0] - current[0], target[1] - current[1]
                     if abs(dx) <= 2 and abs(dy) <= 2:
                         return
-                    sx = max(-16, min(16, dx // 2 if abs(dx) > 2 else 0))
-                    sy = max(-16, min(16, dy // 2 if abs(dy) > 2 else 0))
+                    sx = max(-16, min(16, (dx if self.humanize or fast else dx // 2) if abs(dx) > 2 else 0))
+                    sy = max(-16, min(16, (dy if self.humanize or fast else dy // 2) if abs(dy) > 2 else 0))
                     self.transport.command(f"MOVE {sx} {sy}", "MOVED")
-            self.wait(0.006)
+            self.wait(interval)
         raise RuntimeError("HID-наведение не сошлось; клик отменён")
+
+    def _feedback_move(self, target: tuple[int, int], verify: Callable[[], None] | None,
+                       deadline: float, interval: float) -> None:
+        gain = [2., 2.]
+        previous: tuple[int, int] | None = None
+        step = (0, 0)
+        best = float("inf")
+        stalled = 0
+        unanswered = 0
+        while self.active_time() < deadline:
+            with self.ready():
+                if verify is not None:
+                    verify()
+                current = self.desktop.cursor()
+                self.desktop.check_point(target)
+                error = (target[0] - current[0], target[1] - current[1])
+                distance = max(abs(value) for value in error)
+                if distance <= 2:
+                    return
+                if previous is not None:
+                    for axis in range(2):
+                        actual = current[axis] - previous[axis]
+                        if step[axis] and actual * step[axis] > 0:
+                            gain[axis] = max(1., min(16., abs(actual / step[axis])))
+                if distance < best:
+                    best, stalled = distance, 0
+                else:
+                    stalled += 1
+                if stalled >= 20:
+                    raise RuntimeError(f"Наведение не сходится; движение прекращено, клик отменён; "
+                                       f"курсор={current}, цель={target}, остаток={error}, шаг={step}, усиление={gain}")
+                # У цели уменьшаем шаг; учитываем фактическое ускорение Windows.
+                values = []
+                for axis, value in enumerate(error):
+                    amount = max(1, int(abs(value) / max(2., gain[axis]))) if abs(value) > 2 else 0
+                    values.append(min(16, amount) * (1 if value > 0 else -1))
+                step = tuple(values)
+                previous = current
+                self.transport.command(f"MOVE {step[0]} {step[1]}", "MOVED")
+            # ACK может прийти уже после движения: тогда дополнительная пауза не нужна.
+            # По старой позиции следующую поправку не отправляем.
+            response_until = min(deadline, self.active_time() + .06)
+            polls = 0
+            observed = previous
+            while self.active_time() < response_until and polls < 20:
+                with self.ready():
+                    observed = self.desktop.cursor()
+                if observed != previous:
+                    break
+                self.wait(interval)
+                polls += 1
+            unanswered = unanswered + 1 if observed == previous else 0
+            if unanswered >= 3:
+                raise RuntimeError(f"Наведение не сходится; движение прекращено, клик отменён; "
+                                   f"Pico принял MOVE, но курсор не изменился; курсор={observed}, "
+                                   f"цель={target}, последний шаг={step}")
+        current = self.desktop.cursor()
+        raise RuntimeError(f"HID-наведение не сошлось; клик отменён; курсор={current}, "
+                           f"цель={target}, последний шаг={step}, усиление={gain}")
 
     def recover_view(self, deadline: float) -> None:
         """
@@ -239,15 +350,15 @@ class ActionController:
     def key(self, name: str, duration: int) -> None:
         if name not in KEYS or not 1 <= duration <= 1000:
             raise ValueError("Недопустимая клавиша или длительность")
+        if self.humanize and duration <= 200:
+            duration = random.randint(max(1, round(duration * .7)), round(duration * 1.3))
         self._hold("KEY", name, duration)
 
     def click(self, button: str, x: float, y: float,
               verify: Callable[[], None] | None = None) -> None:
         if button not in {"left", "right"}:
             raise ValueError("Недопустимая кнопка мыши")
-        self.move(x, y, verify=verify)
-        if verify is not None:
-            verify()
+        self.move(x, y, verify=verify, fast=True)
         with self.ready():
             if verify is not None:
                 verify()
@@ -256,8 +367,9 @@ class ActionController:
             self.desktop.check_point(current)
             if max(abs(a - b) for a, b in zip(current, target)) > 2:
                 raise RuntimeError("Курсор сместился; клик отменён")
-            self.transport.hold("BUTTON", button, 80)
-        self.wait(0.10)
+            duration = random.randint(70, 130) if self.humanize else 80
+            self.transport.hold("BUTTON", button, duration)
+        self.wait(duration / 1000 + .02)
         with self.ready():
             self.transport.release()
 
@@ -273,7 +385,8 @@ class ActionController:
             raise ValueError("Недопустимая кнопка мыши")
         with self.ready():
             self.desktop.check_point(self.desktop.cursor())
-            self.transport.hold("BUTTON", button, 80)
-        self.wait(.10)
+            duration = random.randint(70, 130) if self.humanize else 80
+            self.transport.hold("BUTTON", button, duration)
+        self.wait(duration / 1000 + .02)
         with self.ready():
             self.transport.release()

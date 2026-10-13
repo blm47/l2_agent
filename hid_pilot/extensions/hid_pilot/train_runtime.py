@@ -2,6 +2,7 @@
 Расширение healer_train: проверки фаз до клика и скилла, без движения при потере данных.
 """
 
+import random
 import shutil
 import time
 from collections.abc import Callable
@@ -52,6 +53,10 @@ class TrainHealer(Healer):
         super().__init__(controller, own, party, config, notify, state_path)
         restored = self.policy
         self.policy = TrainPolicy(config, time.monotonic())
+        self.policy.humanize = config.humanize
+        self.policy.chain_heals = config.chain_heals
+        if config.humanize:
+            self.policy.support_ready_at += random.uniform(0, 5)
         self.policy.ready_at = restored.ready_at
         self.policy.busy_until = restored.busy_until
         config.poll_seconds = config.collect_poll_seconds
@@ -68,9 +73,12 @@ class TrainHealer(Healer):
     def select(self, name: str, button: str = "left", twice: bool = False) -> int:
         x, y, slot = self.point(name)
         x, y = self.click_point(x, y, slot)
+        revision = self.latest().profile_revision
 
         def verify() -> None:
             state = self.latest()
+            if state.profile_revision != revision:
+                raise TargetChanged("Разметка пати изменилась во время наведения")
             if self.point(name)[2] != slot:
                 raise TargetChanged("Строка цели исчезла")
             if self.selecting is not None:
@@ -80,17 +88,53 @@ class TrainHealer(Healer):
                     raise TargetChanged("Фаза парика или приоритет изменились при наведении")
 
         self.controller.click(button, x, y, verify=verify)
+        self.observer.reader.identities.invalidate()
         if twice:
             self.controller.wait(.05)
             self.controller.click(button, x, y, verify=verify)
+            self.observer.reader.identities.invalidate()
         return slot
 
     def execute(self, decision: HealDecision, state: HealerSnapshot) -> None:
         self.selecting = decision
+        previous_cast = self.active_cast
         try:
+            revised = self.policy.decide(self.latest(), time.monotonic())
+            if (revised.kind, revised.skill, revised.target) != (decision.kind, decision.skill, decision.target):
+                raise TargetChanged("Приоритет парика изменился до выделения цели")
             super().execute(decision, state)
+            if (self.active_cast is not previous_cast and decision.kind == "cast"
+                    and decision.skill in {"group", "mass_major", "avatar"}):
+                # Считаем последующий урон от завершения доставленного каста, включая задержку F8.
+                self.policy.mass_cast_finished_at = self.active_cast[1]
+                self.policy.heavy_damage_until.clear()
+            if (self.active_cast is not previous_cast and decision.kind == "cast"
+                    and decision.skill in {"battle", "major", "group", "mass_major", "avatar", "balance", "self_rescue", "area_heal"}):
+                self.step_after_heal()
         finally:
             self.selecting = None
+
+    def step_after_heal(self) -> None:
+        generation = self.controller.pause_generation
+        cast_until = self.active_cast[1]
+        while True:
+            self.controller.checkpoint()
+            if self.controller.pause_generation != generation:
+                raise TargetChanged("Пауза отменила движение после хила")
+            current = self.latest()
+            if current.hp is None or current.hp <= 0:
+                raise TargetChanged("Нет живого персонажа для движения после хила")
+            for sample in self.observer.snapshots():
+                self.policy.ingest(sample)
+            remaining = cast_until - time.monotonic()
+            if remaining <= 0:
+                break
+            # Ждём завершения каста с проверками STOP, паузы и свежих HP.
+            self.controller.wait(min(.05, remaining))
+        key = random.choice(("W", "A", "S", "D"))
+        self.controller.key(key, 1000)
+        self.approach_until = None
+        self.report(f"После хила: {key} на 1 секунду")
 
     def recover_unknown_state(self, deadline: float) -> None:
         raise RuntimeError("Парик: данные потеряны; восстановительные движения запрещены")

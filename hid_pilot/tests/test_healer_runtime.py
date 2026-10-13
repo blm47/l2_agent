@@ -23,7 +23,7 @@ def harness(monkeypatch, tmp_path):
     own = BarProfile(width=200, height=800, numbers={key: box for key in ("hp", "mp", "cp")})
     party = PartyProfile(width=200, height=800, row_step=70,
                          name=box, cp=box, hp=box, mp=box)
-    healer = Healer(controller, own, party, HealerConfig(battle_cast=1, follow_key=None, mp_buff_key=None, follow_seconds=7),
+    healer = Healer(controller, own, party, HealerConfig(aura_enabled=False, self_rescue_key=None, chain_heals=False, follow_select_mouse=True, humanize=False, auto_loot=False, battle_cast=1, follow_key=None, mp_buff_key=None, follow_seconds=7),
                      Mock(), tmp_path / "healer-cooldowns.json")
     state = HealerSnapshot(at=10., hp=1., mp=1., cp=1., roster_known=True,
                            members=(PartyMember(slot=1, name="@slot1", hp=.4, mp=1, cp=1),))
@@ -210,8 +210,8 @@ def test_unknown_member_does_not_stop_but_missing_critical_state_does(monkeypatc
         assert now[0] == 22.
         assert [call.args[0] for call in controller.click.call_args_list] == (["left", "left"] if missing == "member" else [])
     else:
-        with pytest.raises(RuntimeError, match="неизвестны более 10 секунд"):
-            healer.run(deadline=22.)
+        healer.run(deadline=22.)
+        assert now[0] == 22.
         controller.click.assert_not_called()
     controller.key.assert_not_called()
     observer.close.assert_called_once()

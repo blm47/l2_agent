@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +19,7 @@ class Runner:
     def __init__(self, controller: ActionController, base: Path,
                  notify: Callable[[str], None], variables: dict[str, str] | None = None) -> None:
         self.controller = controller
+        self.controller.humanize = True
         self.base = base
         self.notify = notify
         self.found: tuple[float, float] | None = None
@@ -32,7 +34,7 @@ class Runner:
             self.controller.checkpoint()
             self.steps += 1
             if self.steps > 100_000 or time.monotonic() > self.deadline:
-                raise RuntimeError("Достигнут лимит сценария: 100000 шагов / 1 час")
+                raise RuntimeError("Достигнут лимит сценария: 100000 шагов / 10 часов")
             self.notify(f"Строка {item.line}: {item.operation}")
             logger.info("Строка %s: %s", item.line, item.operation)
             args = item.args
@@ -52,7 +54,8 @@ class Runner:
                 if self.found is not None and time.monotonic() - self.found_at <= 1:
                     self.run(item.body)
             elif item.operation == "wait":
-                self.controller.wait(float(args[0]))
+                seconds = float(args[0])
+                self.controller.wait(seconds + random.uniform(0, min(.1, seconds * .1)))
             elif item.operation == "key":
                 self.controller.key(args[0], int(args[1]))
                 self.found = None

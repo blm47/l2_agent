@@ -52,6 +52,7 @@ class PartyReview(QDialog):
         form = QFormLayout()
         self.field = QComboBox()
         self.field.addItem("Вся панель пати (найти строки в выделении)", "panel")
+        self.field.addItem("CP первого участника (перенести всю разметку)", "anchor")
         for key, title in FIELDS.items():
             self.field.addItem(title, key)
         form.addRow("Выделяем мышью", self.field)
@@ -128,6 +129,23 @@ class PartyReview(QDialog):
             self.load_profile(candidates[0].profile)
             self.zoom_party()
         else:
+            if key == "anchor":
+                previous = self.regions.get("cp")
+                if previous is None:
+                    self.status.setText("Сначала найдите панель или задайте полосы вручную.")
+                    return
+                dx, dy = box.x1 - previous.x1, box.y1 - previous.y1
+                try:
+                    shifted = {kind: BarBox(x1=value.x1 + dx, x2=value.x2 + dx,
+                                           y1=value.y1 + dy, y2=value.y2 + dy)
+                               for kind, value in self.regions.items()}
+                except ValueError:
+                    self.status.setText("Перенос выводит области за границы окна; уточните выделение.")
+                    return
+                shifted["cp"] = box
+                self.regions = shifted
+                self.update_preview()
+                return
             self.regions[key] = box
             self.update_preview()
 
@@ -157,7 +175,8 @@ class PartyReview(QDialog):
         self.canvas.view_box = BarBox(
             x1=max(0, min(b.x1 for b in boxes) - .02),
             x2=min(1, max(b.x2 for b in boxes) + .02),
-            y1=max(0, min(b.y1 for b in boxes) - .02),
+            # Ошибочно пропущенная первая строка должна быть доступна для коррекции.
+            y1=max(0, min(b.y1 for b in boxes) - profile.row_step / profile.height - .02),
             y2=min(1, max(b.y2 for b in boxes) + .02))
         self.canvas.update()
 

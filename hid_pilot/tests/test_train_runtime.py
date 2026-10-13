@@ -12,7 +12,7 @@ from hid_pilot.train_runtime import TrainHealer
 def runtime(monkeypatch, tmp_path):
     base, controller, observer, _snapshot, now = harness(monkeypatch, tmp_path)
     base.__class__ = TrainHealer
-    base.config = TrainConfig()
+    base.config = TrainConfig(aura_enabled=False, self_rescue_key=None)
     base.policy = TrainPolicy(base.config, 9.5)
     base.policy.ingest(state(9.5))
     base.policy.phase = TrainPhase.COMBAT

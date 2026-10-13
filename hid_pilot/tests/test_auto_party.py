@@ -44,6 +44,26 @@ def test_partial_bars_use_cp_extent_for_user_review():
     assert profile.hp.y1 == 67 / 800
 
 
+def test_first_member_with_empty_mp_keeps_first_slot():
+    image, reader = scene(8)
+    image[79:89] = 0
+    found = find_party(image, reader)
+    assert len(found) == 1
+    profile = found[0].profile
+    assert profile.cp.y1 == 60 / 800
+    assert profile.mp.y1 == 79 / 800
+    assert profile.row_offsets == [index * 80 for index in range(8)]
+
+
+def test_first_member_with_empty_cp_is_not_skipped():
+    image, reader = scene(8)
+    image[60:65] = 0
+    found = find_party(image, reader)
+    assert len(found) == 1
+    assert found[0].profile.cp.y1 == 60 / 800
+    assert found[0].profile.hp.y1 == 67 / 800
+
+
 def test_first_member_with_low_mp_and_pets_is_not_skipped():
     image = np.zeros((1000, 600, 3), dtype=np.uint8)
     offsets = [0, 80, 160, 240, 340, 420, 500, 600]

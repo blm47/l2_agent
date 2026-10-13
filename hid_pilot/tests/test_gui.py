@@ -18,6 +18,78 @@ from hid_pilot.numbers import parse_numbers
 from hid_pilot.picker import ScreenPicker
 
 
+@pytest.fixture(autouse=True)
+def isolated_window_layout(monkeypatch, tmp_path):
+    monkeypatch.setattr("hid_pilot.__main__.user_data_dir", lambda: tmp_path)
+
+
+def test_default_panels_match_screenshot_and_restore_user_sizes(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    first = MainWindow()
+    try:
+        first.resize(1180, 1300)
+        first.show()
+        app.processEvents()
+        assert first.tabs.currentIndex() == 1
+        left, right = first.script_splitter.sizes()
+        top, bottom = first.log_splitter.sizes()
+        assert left / (left + right) == pytest.approx(.4, abs=.03)
+        assert bottom / (top + bottom) == pytest.approx(1 / 3, abs=.03)
+        first.script_splitter.setSizes([550, 550])
+        first.log_splitter.setSizes([850, 350])
+        app.processEvents()
+        expected_script = first.script_splitter.sizes()
+        expected_log = first.log_splitter.sizes()
+    finally:
+        first.close()
+    second = MainWindow()
+    try:
+        # Offscreen-экран меньше скриншота: сравниваем панели при одинаковом размере окна.
+        second.resize(1180, 1300)
+        second.show()
+        app.processEvents()
+        assert second.script_splitter.sizes() == pytest.approx(expected_script, abs=2)
+        assert second.log_splitter.sizes() == pytest.approx(expected_log, abs=2)
+    finally:
+        second.close()
+
+
+def test_reopening_restores_position_size_tab_and_controls(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    first = MainWindow()
+    try:
+        first.resize(700, 680)
+        # На узком offscreen-экране Qt при восстановлении прижимает широкое окно к левому краю.
+        first.move(1, 35)
+        first.tabs.setCurrentIndex(0)
+        first.port.setText("COM7")
+        first.auto_scope.setCurrentIndex(1)
+        first.log_level.setCurrentText("DEBUG")
+        first.show()
+        app.processEvents()
+        position, size = first.pos(), first.size()
+    finally:
+        first.close()
+    second = MainWindow()
+    try:
+        second.show()
+        app.processEvents()
+        assert second.pos() == position
+        assert second.size() == size
+        assert second.tabs.currentIndex() == 0
+        assert second.port.text() == "COM7"
+        assert second.auto_scope.currentData() is False
+        assert second.log_level.currentText() == "DEBUG"
+        assert second.controller is None
+    finally:
+        second.log_level.setCurrentText("INFO")
+        second.close()
+
+
 def test_editor_validation_without_hid(monkeypatch):
     app = QApplication.instance() or QApplication([])
     hotkey = Mock(available=True)
@@ -321,6 +393,30 @@ def test_manual_party_draws_template_and_accounts_for_two_pets():
     reopened = PartyReview(dialog.image, saved)
     assert reopened.profile() == saved
     reopened.reject()
+    dialog.close()
+
+
+def test_manual_party_can_restore_first_member_from_second_row():
+    from hid_pilot.party import PartyProfile
+    from hid_pilot.party_review import PartyReview
+
+    app = QApplication.instance() or QApplication([])
+    profile = PartyProfile(width=600, height=1000, row_step=80,
+                           name=BarBox(x1=.05, x2=.4, y1=.11, y2=.13),
+                           cp=BarBox(x1=.05, x2=.4, y1=.14, y2=.145),
+                           hp=BarBox(x1=.05, x2=.4, y1=.147, y2=.157),
+                           mp=BarBox(x1=.05, x2=.4, y1=.159, y2=.169))
+    dialog = PartyReview(np.zeros((1000, 600, 3), dtype=np.uint8), profile)
+    app.processEvents()
+    assert dialog.canvas.view_box.y1 <= .03
+    dialog.field.setCurrentIndex(dialog.field.findData("anchor"))
+    dialog.select_region(BarBox(x1=.05, x2=.4, y1=.06, y2=.065))
+    restored = dialog.profile()
+    for kind in ("name", "cp", "hp", "mp"):
+        assert getattr(restored, kind).y1 == pytest.approx(getattr(profile, kind).y1 - .08)
+        assert restored.box(kind, 1).y1 == pytest.approx(getattr(profile, kind).y1)
+    dialog.save()
+    assert dialog.result() == dialog.DialogCode.Accepted
     dialog.close()
 
 

@@ -1,4 +1,4 @@
-HID Pilot 0.2.0 — Windows 10/11 x64
+HID Pilot 0.3.1 — Windows 10/11 x64
 
 Запуск:
 1. Скопируйте HID_Pilot.exe и нужную папку extensions рядом с ним. Python и интернет не нужны.

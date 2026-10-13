@@ -25,17 +25,17 @@ class ParalysisProfile(BaseModel):
 
 
 class ParalysisDetector:
-    def __init__(self, path: Path, party: PartyProfile) -> None:
-        self.profile = ParalysisProfile.model_validate_json(path.read_text("utf-8"))
-        if (self.profile.width, self.profile.height) != (party.width, party.height):
-            raise ValueError("Шаблон паралича и профиль пати имеют разные размеры окна")
-        template_path = path.parent / self.profile.template
-        if template_path.stat().st_size > 1_000_000:
+    def __init__(self, path: Path | ParalysisProfile, party: PartyProfile) -> None:
+        self.profile = path if isinstance(path, ParalysisProfile) else ParalysisProfile.model_validate_json(path.read_text("utf-8"))
+        # Размер исходного снимка не задаёт разрешение игрового окна и размер иконки.
+        self.profile = self.profile.model_copy(update={"width": party.width, "height": party.height})
+        template_path = Path(self.profile.template) if isinstance(path, ParalysisProfile) else path.parent / self.profile.template
+        if template_path.stat().st_size > 8_000_000:
             raise ValueError("Шаблон паралича слишком большой")
         self.template = cv2.imdecode(np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if (self.template is None or not 8 <= self.template.shape[0] <= 128
-                or not 8 <= self.template.shape[1] <= 128 or np.std(self.template) < 10):
-            raise ValueError("Нужна отдельная иконка паралича размером 8–128 px")
+        if (self.template is None or not 8 <= self.template.shape[0] <= 1024
+                or not 8 <= self.template.shape[1] <= 1024 or np.std(self.template) < 10):
+            raise ValueError("Нужна отдельная референсная иконка паралича размером 8–1024 px")
         if not self.profile.icon_widths or any(not 8 <= size <= 64 for size in self.profile.icon_widths):
             raise ValueError("Размеры поиска иконки должны быть в диапазоне 8–64 px")
         height, width = self.template.shape[:2]
@@ -64,6 +64,8 @@ class ParalysisDetector:
                 next_top = round(self.party.box("name", slot).y1 * cfg.height) - cfg.y_padding
                 bottom = min(bottom, next_top)
             crop = image[top:bottom, left:right]
+            if crop.size == 0 or np.count_nonzero(np.max(crop, axis=2) > 50) < 12:
+                continue
             gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
             scores = []
             compatible = False

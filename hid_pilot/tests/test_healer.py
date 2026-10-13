@@ -188,7 +188,7 @@ def test_failed_single_heal_escalates_to_mass_heal():
     p = policy()
     p.ready_at["balance"] = 100
     p.single_failed.add("@slot1")
-    assert p.decide(snapshot(party=(.3, 1.)), 10.).skill == "mass_major"
+    assert p.decide(snapshot(party=(.3, 1.)), 10.).skill == "group"
 
 
 def test_failed_single_without_danger_uses_free_group_heal():
@@ -308,13 +308,13 @@ def calm(p, end=5.):
 
 def test_invocation_requires_quiet_window_and_locks_all_actions():
     p = policy()
-    calm(p)
-    decision = p.decide(snapshot(at=5., mp=.1), 5.)
+    calm(p, 30.)
+    decision = p.decide(snapshot(at=30., mp=.1), 30.)
     assert decision.skill == "invocation"
-    p.committed(decision, snapshot(at=5., mp=.1), 5.)
-    assert p.ready_at["invocation"] == 305
-    assert p.busy_until > 35
-    assert p.decide(snapshot(at=20, hp=.2, party=(.1, .1)), 20).kind == "wait"
+    p.committed(decision, snapshot(at=30., mp=.1), 30.)
+    assert p.ready_at["invocation"] == 330
+    assert p.busy_until > 60
+    assert p.decide(snapshot(at=45, hp=.2, party=(.1, .1)), 45).kind == "wait"
     end = p.busy_until
     assert p.decide(snapshot(at=end, mp=.8), end).kind == "follow"
 
@@ -323,7 +323,7 @@ def test_invocation_requires_quiet_window_and_locks_all_actions():
 def test_damage_or_unknown_observation_blocks_invocation(change):
     p = policy()
     calm(p)
-    action = p.decide(snapshot(at=5.2, mp=.1, **change), 5.2)
+    action = p.decide(snapshot(at=5.2, mp=.3, **change), 5.2)
     assert action.skill != "invocation"
 
 

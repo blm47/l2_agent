@@ -1,0 +1,25 @@
+{
+  "width": 2189,
+  "height": 1327,
+  "template": "paralysis.bmp",
+  "search_width": 180,
+  "y_padding": 8,
+  "threshold": 0.92,
+  "icon_widths": [
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32
+  ]
+}

@@ -3,6 +3,7 @@
 """
 
 import logging
+import random
 from collections import deque
 from itertools import pairwise
 from typing import Literal
@@ -12,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from hid_pilot.party import PartyMember
 from hid_pilot.script import KEYS
 
-Skill = Literal["balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2"]
+Skill = Literal["balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2", "self_rescue", "area_heal"]
 logger = logging.getLogger("hid_pilot.healer")
 
 
@@ -20,7 +21,14 @@ class HealerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     follow_slot: int = Field(default=1, ge=1, le=8)
     follow_seconds: float = Field(default=4, ge=1, le=300)
-    follow_key: str | None = "F1"
+    follow_key: str | None = "9"
+    follow_select_mouse: bool = False
+    chain_heals: bool = True
+    cancel_unneeded_casts: bool = False
+    heal_press_interval: float = Field(default=.15, ge=.1, le=1)
+    humanize: bool = True
+    auto_loot: bool = True
+    loot_key: str = "C"
     cursor_jitter: float = Field(default=.15, ge=0, le=.15)
     party_click_jitter: float = Field(default=.001, ge=0, le=.001)
     mp_buff_key: str | None = "F11"
@@ -29,7 +37,7 @@ class HealerConfig(BaseModel):
     mp_buff2_key: str | None = "F10"
     mp_buff2_cooldown: float = Field(default=900, ge=1, le=3600)
     mp_buff2_cast: float = Field(default=1, ge=0, le=5)
-    invocation_mp: float = Field(default=.6, gt=0, le=1)
+    invocation_mp: float = Field(default=.8, gt=0, le=1)
     support_start_delay: float = Field(default=30, ge=30, le=300)
     maintain_hp: float = Field(default=.7, gt=.5, lt=1)
     missing_hp_timeout: float = Field(default=45, gt=15, le=300)
@@ -49,7 +57,7 @@ class HealerConfig(BaseModel):
     rapid_drop: float = Field(default=.08, gt=0, le=1)
     low_mp: float = Field(default=.2, gt=0, lt=1)
     minimum_cast_mp: float = Field(default=.02, ge=0, lt=1)
-    quiet_seconds: float = Field(default=5, ge=2, le=60)
+    quiet_seconds: float = Field(default=30, ge=30, le=60)
     chase_seconds: float = Field(default=30, ge=0, le=30)
     chase_probe_seconds: float = Field(default=3, ge=.3, le=10)
     exclude_seconds: float = Field(default=15, ge=1, le=120)
@@ -61,6 +69,7 @@ class HealerConfig(BaseModel):
     major_key: str = "3"
     mass_major_key: str = "F2"
     group_key: str = "F6"
+    group_buff_seconds: float = Field(default=15, ge=15, le=60)
     avatar_key: str = "NUM7"
     invocation_key: str = "-"
     recharge_key: str | None = None
@@ -69,6 +78,12 @@ class HealerConfig(BaseModel):
     purify_cooldown: float = Field(default=4, gt=0, le=60)
     purify_cast: float | None = Field(default=None, gt=0, le=30)
     self_key: str | None = None
+    self_rescue_key: str | None = "4"
+    self_rescue_cast: float = Field(default=.2, ge=0, le=30)
+    self_rescue_cooldown: float = Field(default=8, ge=8, le=60)
+    aura_enabled: bool = True
+    aura_key: str = "F8"
+    aura_cast: float = Field(default=.3, ge=0, le=3)
     balance_cooldown: float = Field(default=30, ge=30, le=3600)
     avatar_cooldown: float = Field(default=1200, ge=1200, le=3600)
     invocation_cooldown: float = Field(default=300, ge=300, le=3600)
@@ -95,7 +110,7 @@ class HealerConfig(BaseModel):
     regular_cooldown: float = Field(default=2, ge=.1, le=60)
 
     @field_validator("balance_key", "battle_key", "major_key", "mass_major_key", "group_key",
-                     "avatar_key", "invocation_key", "recharge_key", "self_key", "purify_key", "follow_key", "mp_buff_key", "mp_buff2_key", "stun_probe_key")
+                     "avatar_key", "invocation_key", "recharge_key", "self_key", "purify_key", "follow_key", "mp_buff_key", "mp_buff2_key", "stun_probe_key", "loot_key", "self_rescue_key", "aura_key")
     @classmethod
     def allowed_key(cls, value: str | None) -> str | None:
         if value is not None and value not in KEYS:
@@ -111,7 +126,7 @@ class HealerConfig(BaseModel):
         return self
 
     def cast_seconds(self, skill: Skill) -> float:
-        if skill in {"mp_buff", "mp_buff2"}:
+        if skill in {"mp_buff", "mp_buff2", "self_rescue"}:
             return getattr(self, skill + "_cast")
         if skill == "invocation":
             # 30 секунд эффекта не ускоряются casting speed; startup оставляем базовым.
@@ -137,6 +152,8 @@ class HealerSnapshot(BaseModel):
     cp: float | None = Field(default=None, ge=0, le=1)
     members: tuple[PartyMember, ...] = ()
     roster_known: bool = False
+    destroyer_slots: tuple[int, ...] = ()
+    profile_revision: int = 0
     selected_name: str | None = None
     selected_class: str | None = None
     selected_clan: str | None = None
@@ -148,6 +165,12 @@ class HealerSnapshot(BaseModel):
                 and self.selected_confidence >= .9 and bool(self.selected_class)
                 and bool(self.selected_name) and matches[0].name == self.selected_name
                 and sum(member.name == self.selected_name for member in self.members) == 1)
+
+    def selected_other_player(self, target: str) -> bool:
+        leaders = [member for member in self.members if member.target_id == target]
+        return (len(leaders) == 1 and bool(leaders[0].name) and leaders[0].confidence >= .9
+                and self.selected_confidence >= .9 and bool(self.selected_class)
+                and bool(self.selected_name) and self.selected_name != leaders[0].name)
 
     def health(self) -> dict[str, float]:
         result = {m.target_id: m.hp for m in self.members if m.hp is not None}
@@ -167,12 +190,21 @@ class HealDecision(BaseModel):
 class HealPolicy:
     def __init__(self, config: HealerConfig, now: float) -> None:
         self.config = config
+        self.humanize = False
+        self.chain_heals = False
+        self.heal_attempt_since: float | None = None
+        self.heal_attempt_targets: set[str] = set()
+        self.recovery_follow = False
+        self.destroyer_slots: tuple[int, ...] = ()
         self.follow_name: str = f"@slot{config.follow_slot}"
         self.follow_needed = True
         self.next_follow_at = now + config.follow_seconds
         self.ready_at: dict[str, float] = {}
         self.busy_until = now
         self.last_damage = now
+        self.self_safe_since: float | None = None
+        self.self_attempt_since: float | None = None
+        self.self_attempt_count = 0
         self.support_ready_at = now + config.support_start_delay
         self.hp_missing_since: dict[int, float] = {}
         self.expected_slots: set[int] = {config.follow_slot}
@@ -206,6 +238,17 @@ class HealPolicy:
     def ingest(self, state: HealerSnapshot) -> None:
         if self.previous is not None and state.at <= self.previous.at:
             return
+        if self.previous is not None and state.profile_revision != self.previous.profile_revision:
+            self.previous = None
+            self.history.clear()
+            self.hp_missing_since.clear()
+            self.ignored_slots.clear()
+            self.expected_slots = {member.slot for member in state.members}
+            self.heal_attempt_since = None
+            self.follow_needed = True
+        if state.destroyer_slots != self.destroyer_slots and state.destroyer_slots:
+            logger.warning("Иконка Разрушителя на строках %s: баланс запрещён", state.destroyer_slots)
+        self.destroyer_slots = state.destroyer_slots
         self.expected_slots.update(member.slot for member in state.members if member.slot not in self.ignored_slots)
         observed = {member.slot: member.hp for member in state.members}
         for slot in self.expected_slots:
@@ -231,6 +274,36 @@ class HealPolicy:
                     self.follow_needed = True
         state = self.monitored_state(state)
         health = state.health()
+        previous = self.previous
+        if (previous is None or state.hp is None or previous.hp is None or state.at - previous.at > 1
+                or state.hp - previous.hp >= .005 or state.hp >= self.config.maintain_hp):
+            self.self_attempt_since = None
+            self.self_attempt_count = 0
+            if not self.stun_suspected:
+                self.probe_started_at = None
+                self.probe_frame_at = None
+                self.probe_baseline.clear()
+        if (state.hp is None or previous is None or previous.hp is None
+                or not 0 < state.at - previous.at <= .75):
+            self.self_safe_since = state.at if state.hp is not None else None
+        elif (previous.hp - state.hp) / (state.at - previous.at) > .05 + 1e-9:
+            self.self_safe_since = state.at
+        if self.chain_heals and self.heal_attempt_since is not None:
+            previous_health = self.previous.health() if self.previous is not None else {}
+            helped = any(target in health and target in previous_health
+                         and health[target] - previous_health[target] >= .005
+                         for target in self.heal_attempt_targets)
+            gap = self.previous is not None and state.at - self.previous.at > 1
+            if helped or gap or all(health.get(target, 0) >= self.config.maintain_hp for target in self.heal_attempt_targets):
+                self.heal_attempt_since = None
+                self.heal_attempt_targets.clear()
+                self.recovery_follow = False
+            elif state.at - self.heal_attempt_since >= 30:
+                if not self.recovery_follow:
+                    logger.warning("Хил не дал наблюдаемого эффекта за 30 секунд; восстановить подход к группе")
+                self.recovery_follow = True
+                self.follow_needed = True
+                self.feedback_note = "Нет эффекта хила 30 секунд: возможны отрыв от группы, стан или входящий урон; восстановить подход"
         if self.stun_suspected and self.probe_frame_at is not None and state.at > self.probe_frame_at:
             if state.at - self.probe_frame_at > .75 or set(health) != set(self.probe_baseline):
                 # После пропуска кадров не приписываем накопившийся прирост нажатию Пробела.
@@ -250,7 +323,8 @@ class HealPolicy:
         if self.previous is None:
             # Время загрузки OCR до первого кадра не считается затишьем в пати.
             self.last_damage = state.at
-        if not self.health_complete(state) or state.hp is None:
+        if (not self.health_complete(state) or state.hp is None or state.cp is None
+                or any(member.cp is None for member in state.members)):
             self.last_damage = state.at
         if self.previous is not None:
             if state.at - self.previous.at > .75:
@@ -278,6 +352,8 @@ class HealPolicy:
         if self.pending and state.at >= self.pending[2]:
             decision, before, _ = self.pending
             self.pending = None
+            if self.chain_heals:
+                return
             if decision.skill in {"battle", "major"}:
                 name = decision.target
                 if name in before and name in health:
@@ -309,6 +385,8 @@ class HealPolicy:
                         self.excluded[name] = state.at + self.config.exclude_seconds
 
     def ready(self, skill: Skill, now: float) -> bool:
+        if skill == "balance" and self.destroyer_slots:
+            return False
         return now >= self.ready_at.get(skill, 0)
 
     def health_complete(self, state: HealerSnapshot) -> bool:
@@ -328,7 +406,8 @@ class HealPolicy:
     def emergency_follow(self, state: HealerSnapshot, now: float) -> HealDecision | None:
         if not (self.follow_needed or now >= self.next_follow_at):
             return None
-        if any(member.target_id == self.follow_name for member in state.members):
+        if (not self.config.follow_select_mouse and self.config.follow_key is not None
+                or any(member.target_id == self.follow_name for member in state.members)):
             return HealDecision(kind="follow", target=self.follow_name, reason="Следование в аварийном режиме")
         return None
 
@@ -354,13 +433,20 @@ class HealPolicy:
                    for a, b in pairwise(samples))
 
     def needs_single(self, state: HealerSnapshot, target: str) -> bool:
+        if self.destroyer_protected(state, target):
+            return False
         hp = state.health().get(target)
         return hp is not None and (hp < self.config.maintain_hp
                                    or self.strong_damage(target))
 
     def needs_battle(self, state: HealerSnapshot, target: str) -> bool:
+        if self.destroyer_protected(state, target):
+            return False
         hp = state.health().get(target)
         return hp is not None and hp < .5 and self.strong_damage(target)
+
+    def destroyer_protected(self, state: HealerSnapshot, target: str) -> bool:
+        return target in {f"@slot{slot}" for slot in state.destroyer_slots}
 
     def recent_drop(self, target: str, now: float) -> float:
         history = self.history.get(target)
@@ -386,6 +472,39 @@ class HealPolicy:
 
     def emergency_slots(self, now: float) -> tuple[int, ...]:
         return tuple(sorted(slot for slot, since in self.hp_missing_since.items() if now - since >= 15))
+
+    def recovery_decision(self, state: HealerSnapshot, now: float) -> HealDecision:
+        follow = self.emergency_follow(state, now)
+        if follow is not None:
+            return follow.model_copy(update={"reason": "Хил без эффекта 30 секунд: восстановить подход к группе"})
+        return HealDecision(kind="wait", reason="Хил без эффекта 30 секунд; нет распознанного ведущего для подхода")
+
+    def urgent_invocation(self, state: HealerSnapshot, now: float) -> bool:
+        return (state.mp is not None and state.mp < self.config.invocation_mp
+                and state.hp is not None and state.hp > 0 and self.health_complete(state)
+                and state.at - self.last_damage >= self.config.quiet_seconds
+                and 0 <= now - state.at <= .5)
+
+    def self_rescue_decision(self, state: HealerSnapshot, now: float) -> HealDecision | None:
+        if self.config.self_rescue_key is None:
+            return None
+        failed = (self.self_attempt_since is not None and self.self_attempt_count >= 2
+                  and now - self.self_attempt_since >= 2)
+        if (self.config.self_rescue_key and self.ready("self_rescue", now) and failed
+                and state.hp is not None and 0 < state.hp < self.config.maintain_hp
+                and state.mp is not None and state.mp >= self.config.minimum_cast_mp):
+            return self.cast("self_rescue", "Спасение себя: повторные хилы не дали наблюдаемого прироста HP")
+        if failed and state.hp is not None and 0 < state.hp < .5:
+            if self.probe_started_at is not None and now - self.probe_started_at >= self.config.stun_probe_timeout:
+                self.self_attempt_since = None
+                self.self_attempt_count = 0
+                self.probe_started_at = None
+                self.probe_frame_at = None
+                self.recovery_follow = True
+                self.follow_needed = True
+                return self.recovery_decision(state, now)
+            return HealDecision(kind="probe", reason="Спасение себя Пробелом: другие хилы не дали эффекта, скилл 4 в откате")
+        return None
 
     def mp_buff_decision(self, now: float) -> HealDecision | None:
         if now < self.support_ready_at or self.config.mp_buff_key is None:
@@ -421,6 +540,11 @@ class HealPolicy:
             return HealDecision(kind="wait", reason="Собственные HP/MP неизвестны")
         if state.hp == 0:
             return HealDecision(kind="stop", reason="Собственное HP = 0")
+        if self.recovery_follow:
+            return self.recovery_decision(state, now)
+        rescue = self.self_rescue_decision(state, now)
+        if rescue is not None:
+            return rescue
         if self.stun_suspected:
             return self.stun_probe_decision(state, now)
         emergency = self.emergency_balance(state, now)
@@ -440,6 +564,8 @@ class HealPolicy:
             severe = sum(self.recent_drop(target, now) > .33 + 1e-9 and self.strong_damage(target)
                          for target in health) / len(health) > .7
             if severe:
+                if self.ready("group", now):
+                    return self.cast("group", "Массовый урон: обычный масс-хил первым")
                 if cfg.allow_ore and self.ready("mass_major", now):
                     return self.cast("mass_major", "Более 70% группы потеряли более 33% HP")
                 if self.ready("group", now):
@@ -465,7 +591,7 @@ class HealPolicy:
             if self.ready("group", now):
                 return self.cast("group", "Собственное лечение без условий для батл хила")
             return HealDecision(kind="wait", reason="Ожидание собственного лечения")
-        if self.follow_name not in state.health():
+        if (self.config.follow_select_mouse or self.config.follow_key is None) and self.follow_name not in state.health():
             return HealDecision(kind="wait", reason="HP строки ведущего не распознано")
         if self.chase_name is not None:
             if now >= self.chase_until:
@@ -482,12 +608,15 @@ class HealPolicy:
         if buff_ready and health_known and can_heal:
             # Короткий баф выполняем до Invocation, который надолго блокирует другие касты.
             return buff
-        if (now >= self.support_ready_at and state.mp < cfg.invocation_mp and health_known
+        if (now >= self.support_ready_at and self.urgent_invocation(state, now) and health_known
                 and all(m.hp is not None and m.hp >= cfg.maintain_hp for m in state.members)
                 and state.hp >= cfg.maintain_hp and now - self.last_damage >= cfg.quiet_seconds
                 and self.ready("invocation", now)):
             return self.cast("invocation", "Мало MP, входящего урона нет")
         if not can_heal:
+            follow = self.emergency_follow(state, now)
+            if follow is not None:
+                return follow
             return HealDecision(kind="wait", reason="MP ниже резерва; ожидается безопасный Invocation")
         active = {name: hp for name, hp in health.items() if name != "@self"
                   and now >= self.excluded.get(name, 0)}
@@ -498,6 +627,8 @@ class HealPolicy:
             return self.cast("avatar", "После баланса HP ≤60% / массовое лечение не справляется")
         failed_single = any(name in self.single_failed for name in injured)
         if failed_single:
+            if self.ready("group", now):
+                return self.cast("group", "Одиночный хил не справился: обычный масс-хил первым")
             if danger and cfg.allow_ore and self.ready("mass_major", now):
                 return self.cast("mass_major", "Опасность / одиночный хил не дал эффекта")
             if self.ready("group", now):
@@ -532,8 +663,28 @@ class HealPolicy:
     def committed(self, decision: HealDecision, state: HealerSnapshot, now: float) -> None:
         if decision.kind == "cast":
             skill = decision.skill
-            self.busy_until = now + self.config.cast_seconds(skill) + self.config.verify_seconds
-            self.ready_at[skill] = now + max(self.config.cooldown(skill), self.config.cast_seconds(skill))
+            chained = self.chain_heals and skill not in {"invocation", "mp_buff", "mp_buff2"}
+            self.busy_until = now + (self.config.heal_press_interval if chained else self.config.cast_seconds(skill) + self.config.verify_seconds)
+            self.ready_at[skill] = now + (self.config.cooldown(skill) if chained else max(self.config.cooldown(skill), self.config.cast_seconds(skill)))
+            if skill == "group":
+                # Откладываем повтор обычного масс-хила до окончания его баффа.
+                self.ready_at[skill] = max(self.ready_at[skill], now + self.config.cast_seconds(skill)
+                                           + self.config.group_buff_seconds)
+            if chained and skill in {"balance", "battle", "major", "group", "mass_major", "avatar", "self_rescue"}:
+                targets = {decision.target} if decision.target else {target for target, hp in state.health().items()
+                                                                    if hp < self.config.maintain_hp}
+                if targets:
+                    if self.heal_attempt_since is None:
+                        self.heal_attempt_since = now
+                    self.heal_attempt_targets.update(targets)
+            if skill in {"battle", "major", "group", "mass_major", "avatar", "balance"} and (
+                    decision.target == "@self" or decision.target is None and state.hp is not None
+                    and state.hp < self.config.maintain_hp):
+                if self.self_attempt_since is None:
+                    self.self_attempt_since = now
+                self.self_attempt_count += 1
+            if self.humanize and skill in {"mp_buff", "mp_buff2"}:
+                self.ready_at[skill] += random.uniform(0, 5)
             self.pending = decision, state.health(), self.busy_until
             if skill not in {"mp_buff", "mp_buff2"} and self.config.follow_key is None:
                 self.follow_needed = True
@@ -543,8 +694,18 @@ class HealPolicy:
             if decision.target:
                 self.retry_at[decision.target] = now + self.config.retry_seconds
         elif decision.kind == "follow":
+            if self.recovery_follow:
+                self.recovery_follow = False
+                self.heal_attempt_since = None
+                self.heal_attempt_targets.clear()
+                self.self_attempt_since = None
+                self.self_attempt_count = 0
+                self.probe_started_at = None
+                self.probe_frame_at = None
+                self.feedback_note = "Команда подхода к группе отправлена; продолжить лечение и проверку эффекта"
             self.follow_needed = False
-            self.next_follow_at = now + self.config.follow_seconds
+            interval = self.config.follow_seconds * (random.uniform(.9, 1.1) if self.humanize else 1)
+            self.next_follow_at = now + interval
             if self.chase_name:
                 self.excluded[self.chase_name] = now + self.config.exclude_seconds
             self.chase_name = None

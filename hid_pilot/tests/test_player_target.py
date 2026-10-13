@@ -34,7 +34,44 @@ def test_player_panel_reads_nickname_class_clan_and_matches_current_party(monkey
     assert (state.selected_name, state.selected_class, state.selected_clan) == ("originalNutta", "Hawkeye", "AES")
     assert state.follows_selected("@slot1")
     image[600:605, 30:40] = 255
-    assert not observer.read(image, 2).follows_selected("@slot1")
+    assert observer.read(image, 2).follows_selected("@slot1")
+    assert observer.read(image, 4).follows_selected("@slot1")
+    assert not observer.read(image, 4.01).follows_selected("@slot1")
+
+
+def test_recognized_other_target_replaces_buffer_immediately(monkeypatch):
+    reader, own, party = identities(monkeypatch, [row("originalNutta", 2), row("Hawkeye", 23)])
+    image = scene()
+    reader.update(image)
+    observer = HealerReader(own, party)
+    observer.identities = reader
+    assert observer.read(image, 1).selected_name == "originalNutta"
+    reader.target = reader.signature(image), {"selected_name": "Other", "selected_class": "Hawkeye", "selected_confidence": .99}
+    assert observer.read(image, 1.1).selected_name == "Other"
+
+
+def test_explicit_selection_invalidates_old_target_buffer(monkeypatch):
+    reader, own, party = identities(monkeypatch, [row("originalNutta", 2), row("Hawkeye", 23)])
+    image = scene()
+    reader.update(image)
+    observer = HealerReader(own, party)
+    observer.identities = reader
+    assert observer.read(image, 1).selected_name == "originalNutta"
+    reader.invalidate()
+    assert observer.read(image, 1.1).selected_name is None
+
+
+def test_unchanged_names_and_player_panel_do_not_repeat_ocr(monkeypatch):
+    reader, _own, _party = identities(monkeypatch, [row("originalNutta", 2), row("Hawkeye", 23)])
+    from hid_pilot import player_target
+
+    ocr = player_target.shared_numbers()
+    image = scene()
+    reader.update(image)
+    calls = ocr.detect.call_count
+    for _ in range(5):
+        reader.update(image)
+    assert ocr.detect.call_count == calls
 
 
 @pytest.mark.parametrize("rows", [[], [row("Mob", 2)],
@@ -82,6 +119,7 @@ def test_train_follow_skips_double_click_for_confirmed_same_player(monkeypatch, 
     from hid_pilot.train_healer import TrainPhase
 
     healer, controller, observer, _now = runtime(monkeypatch, tmp_path)
+    healer.config.follow_select_mouse = True
     state = observer.snapshots.return_value[-1]
     state = state.model_copy(update={"paralyzed_slots": (),
                                      "members": tuple(member.model_copy(update={"hp": 1., "name": "originalNutta" if member.slot == 1 else None,
@@ -92,6 +130,7 @@ def test_train_follow_skips_double_click_for_confirmed_same_player(monkeypatch, 
     healer.execute(HealDecision(kind="follow", target="@slot1", reason="тест"), state)
     controller.click.assert_not_called()
     controller.move.assert_not_called()
+    controller.key.assert_called_once_with("9", 100)
 
 
 def test_target_change_before_f1_cancels_approach(monkeypatch, tmp_path):

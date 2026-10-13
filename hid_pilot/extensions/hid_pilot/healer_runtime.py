@@ -10,12 +10,14 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from hid_pilot.auto_loot import AutoLoot
 from hid_pilot.bars import BarProfile
 from hid_pilot.controller import ActionController
 from hid_pilot.healer import HealDecision, HealerConfig, HealerSnapshot, HealPolicy
 from hid_pilot.healer_log import format_state
 from hid_pilot.healer_observer import HealerObserver, HealerReader
 from hid_pilot.party import PartyProfile
+from hid_pilot.skill_aura import SkillAura
 
 logger = logging.getLogger("hid_pilot.healer")
 
@@ -49,7 +51,16 @@ class Healer:
         self.notify = notify
         self.state_path = state_path
         self.policy = HealPolicy(config, time.monotonic())
+        self.policy.humanize = config.humanize
+        self.policy.chain_heals = config.chain_heals
+        if config.humanize:
+            self.policy.support_ready_at += random.uniform(0, 5)
+        self.controller.humanize = config.humanize
+        self.loot = AutoLoot(time.monotonic())
         self.approach_until: float | None = None
+        self.active_cast: tuple[HealDecision, float, bool] | None = None
+        self.cast_revision = 0
+        self.aura = SkillAura(controller, config.aura_key, notify, config.aura_cast)
         self.observer = HealerObserver(controller.desktop, HealerReader(own, party),
                                        config.poll_seconds, controller.paused.is_set)
         self.identity = controller.desktop.target.title
@@ -67,10 +78,11 @@ class Healer:
             raise ValueError("Файл откатов относится к другому персонажу; нужен отдельный сценарий/папка")
         now, wall = time.monotonic(), time.time()
         for skill, expiry in data["ready_at"].items():
-            if skill not in {"balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2"}:
+            if skill not in {"balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2", "self_rescue", "area_heal"}:
                 raise ValueError("Неизвестный скилл в файле откатов")
             remaining = float(expiry) - wall
-            if not -86400 * 365 <= remaining <= 3600:
+            limit = 3605 if skill in {"mp_buff", "mp_buff2"} else 3600
+            if not -86400 * 365 <= remaining <= limit:
                 raise ValueError("Некорректный таймер отката")
             self.policy.ready_at[skill] = now + max(0, remaining)
         remaining = float(data.get("busy_until", 0)) - wall
@@ -91,7 +103,54 @@ class Healer:
         states = self.observer.snapshots()
         if not states or time.monotonic() - states[-1].at > 1:
             raise TargetChanged("Нет свежего кадра для действия")
+        reader = self.observer.reader
+        if isinstance(reader, HealerReader):
+            with reader.profile_lock:
+                if states[-1].profile_revision != reader.revision:
+                    raise TargetChanged("Фоновая разметка изменилась; ожидается свежий кадр")
+                self.own, self.party = reader.own, reader.party
         return self.policy.monitored_state(states[-1])
+
+    def cancel_cast_if_unneeded(self, state: HealerSnapshot, now: float) -> bool:
+        if not self.config.cancel_unneeded_casts or self.active_cast is None:
+            return False
+        decision, until, ambiguous = self.active_cast
+        if state.profile_revision != self.cast_revision:
+            self.active_cast = None
+            return False
+        if now >= until:
+            self.active_cast = None
+            return False
+        if not 0 <= now - state.at <= .5 or state.hp is None or state.hp <= 0 or state.mp is None or not state.roster_known:
+            return False
+        if any(member.hp is None for member in state.members):
+            return False
+        if not self.policy.health_complete(state):
+            return False
+        if ambiguous:
+            needed = any(self.policy.needs_single(state, target) for target in state.health())
+        elif decision.skill == "purify":
+            if not getattr(state, "debuffs_known", False):
+                return False
+            needed = decision.target in {f"@slot{slot}" for slot in state.paralyzed_slots}
+        elif decision.target:
+            needed = self.policy.needs_single(state, decision.target)
+        else:
+            needed = any(self.policy.needs_single(state, target) for target in state.health())
+            if decision.skill == "balance":
+                needed = needed or self.policy.needs_balance(state.health())
+        if needed:
+            return False
+        self.controller.key("ESC", 100)
+        if self.config.aura_enabled:
+            self.aura.after(now, replace=True)
+            self.aura.tick(time.monotonic())
+        self.active_cast = None
+        self.policy.busy_until = now
+        self.policy.pending = None
+        self.save_timers()
+        self.report(f"ESC: отмена расчётного каста {decision.skill}; лечение больше не требуется; HP={state.health()}")
+        return True
 
     def point(self, name: str) -> tuple[float, float, int]:
         state = self.latest()
@@ -110,8 +169,11 @@ class Healer:
     def select(self, name: str, button: str = "left", twice: bool = False) -> int:
         x, y, slot = self.point(name)
         x, y = self.click_point(x, y, slot)
+        revision = self.latest().profile_revision
 
         def verify() -> None:
+            if self.latest().profile_revision != revision:
+                raise TargetChanged("Разметка пати изменилась во время наведения")
             if self.guard_approach(self.latest()):
                 raise TargetChanged("Сближение остановлено; требуется новое решение")
             if self.point(name)[2] != slot:
@@ -125,9 +187,11 @@ class Healer:
                 raise TargetChanged("Нужно сначала вылечить себя")
 
         self.controller.click(button, x, y, verify=verify)
+        self.observer.reader.identities.invalidate()
         if twice:
             self.controller.wait(.05)
             self.controller.click(button, x, y, verify=verify)
+            self.observer.reader.identities.invalidate()
         return slot
 
     def click_point(self, x: float, y: float, slot: int) -> tuple[float, float]:
@@ -169,6 +233,10 @@ class Healer:
     def execute(self, decision: HealDecision, state: HealerSnapshot) -> None:
         if time.monotonic() < self.policy.busy_until:
             raise TargetChanged("Каст / Invocation ещё не завершён")
+        urgent = (any(hp < .5 or self.policy.strong_damage(target) for target, hp in state.health().items())
+                  or bool(self.policy.emergency_slots(time.monotonic())))
+        if self.config.humanize and decision.kind == "cast" and decision.skill in {"major", "group"} and not urgent:
+            self.controller.wait(random.uniform(0, .1))
         if decision.kind == "probe":
             current = self.latest()
             revised = self.policy.decide(current, time.monotonic())
@@ -176,7 +244,12 @@ class Healer:
                 raise TargetChanged("Восстановление Пробелом больше не требуется или запрещено")
             generation = self.controller.pause_generation
             self.policy.begin_stun_probe(current, time.monotonic())
+            if self.config.aura_enabled:
+                self.aura.before()
             self.controller.key(self.config.stun_probe_key, self.config.stun_probe_hold_ms)
+            if self.config.aura_enabled:
+                self.aura.after(time.monotonic())
+                self.aura.tick(time.monotonic())
             if generation != self.controller.pause_generation:
                 self.policy.probe_frame_at = None
                 self.policy.probe_baseline.clear()
@@ -190,28 +263,35 @@ class Healer:
             if decision.kind == "chase":
                 self.approach_until = time.monotonic() + self.config.chase_seconds
             use_key = decision.kind == "follow" and self.config.follow_key is not None
-            already_selected = decision.kind == "follow" and self.latest().follows_selected(decision.target)
-            if not already_selected:
+            current_target = self.latest()
+            select_with_mouse = decision.kind != "follow" or self.config.follow_select_mouse
+            if decision.kind == "follow" and not select_with_mouse and not use_key:
+                raise TargetChanged("Для следования без мыши задайте follow_key")
+            already_selected = select_with_mouse and decision.kind == "follow" and current_target.follows_selected(decision.target)
+            if select_with_mouse and not already_selected:
                 self.select(decision.target, "left", not use_key)
             if use_key:
                 current = self.latest()
                 if already_selected and not current.follows_selected(decision.target):
-                    raise TargetChanged("Выбранный игрок изменился перед F1; требуется повторное выделение")
+                    raise TargetChanged(f"Выбранный игрок изменился перед {self.config.follow_key}; требуется повторное выделение")
                 revised = self.policy.decide(current, time.monotonic())
                 if (revised.kind, revised.target) != (decision.kind, decision.target):
-                    raise TargetChanged("Приоритет изменился перед F1")
+                    raise TargetChanged(f"Приоритет изменился перед {self.config.follow_key}")
                 self.controller.key(self.config.follow_key, 100)
+                if not select_with_mouse:
+                    self.observer.reader.identities.invalidate()
             self.policy.committed(decision, state, time.monotonic())
             if decision.kind == "follow":
                 self.approach_until = None
-                if not already_selected:
+                if select_with_mouse and not already_selected:
                     spread = self.config.cursor_jitter
                     self.controller.move(random.uniform(.5 - spread, .5 + spread),
-                                         random.uniform(.5 - spread, .5 + spread))
+                                         random.uniform(.5 - spread, .5 + spread), duration=random.uniform(1, 2.5))
         elif decision.kind == "cast":
             if decision.target:
                 if decision.target == "@self" and self.config.self_key:
                     self.controller.key(self.config.self_key, 100)
+                    self.observer.reader.identities.invalidate()
                 else:
                     selected_slot = self.select(decision.target)
                     if self.point(decision.target)[2] != selected_slot:
@@ -219,13 +299,18 @@ class Healer:
                 # Пока двигалась мышь, цель могла сменить строку либо исчезнуть.
                 self.point(decision.target)
             current = self.latest()
+            if current.destroyer_slots and (decision.skill == "balance"
+                                           or decision.skill in {"major", "battle"}
+                                           and self.policy.destroyer_protected(current, decision.target)):
+                raise TargetChanged("Иконка Разрушителя: баланс и целевой хил защищённого участника запрещены")
             revised = self.policy.decide(current, time.monotonic())
             if (revised.kind, revised.skill, revised.target) != (decision.kind, decision.skill, decision.target):
                 raise TargetChanged("После выбора цели приоритет лечения изменился")
             if decision.skill == "invocation":
                 # Урон во время подготовки отменяет Invocation до нажатия.
                 self.policy.ingest(current)
-                if time.monotonic() - self.policy.last_damage < self.config.quiet_seconds:
+                if (time.monotonic() - self.policy.last_damage < self.config.quiet_seconds
+                        and not self.policy.urgent_invocation(current, time.monotonic())):
                     return
             # Резервируем откат до ввода: неопределённый ACK не означает, что скилл не сработал.
             self.policy.committed(decision, current, time.monotonic())
@@ -233,11 +318,29 @@ class Healer:
             if decision.target and decision.target != "@self":
                 # Одиночный хил тоже может включить движение; общий бюджет не продлеваем.
                 self.approach_until = min(self.approach_until or float("inf"), time.monotonic() + 30)
-            self.controller.key(getattr(self.config, decision.skill + "_key"), 100)
+            key = getattr(self.config, decision.skill + "_key")
+            self.report(f"Событие → {key} ({decision.skill}): {decision.reason}; цель={decision.target or 'без выделения'}; "
+                        f"HP={current.health()}, свой MP={current.mp:.0%}")
+            if self.config.aura_enabled:
+                self.aura.before()
+            self.controller.key(key, 100)
+            if decision.skill == "group":
+                # Уточняем таймер после доставки F6, включая ожидание переключения ауры.
+                self.policy.ready_at["group"] = max(self.policy.ready_at["group"], time.monotonic()
+                                                    + self.config.cast_seconds("group")
+                                                    + self.config.group_buff_seconds)
+            if self.config.aura_enabled:
+                self.aura.after(time.monotonic() + self.config.cast_seconds(decision.skill))
+            if decision.skill in {"battle", "major", "group", "mass_major", "avatar", "balance", "purify", "self_rescue", "area_heal"}:
+                ambiguous = self.active_cast is not None and self.active_cast[1] > time.monotonic()
+                self.active_cast = decision, time.monotonic() + self.config.cast_seconds(decision.skill), ambiguous
+                self.cast_revision = current.profile_revision
             if not decision.target or decision.target == "@self":
                 self.approach_until = None
             # Отсчитываем полное ожидание после доставки нажатия, а не до записи файла.
-            self.policy.busy_until = time.monotonic() + self.config.cast_seconds(decision.skill) + self.config.verify_seconds
+            chained = self.policy.chain_heals and decision.skill not in {"invocation", "mp_buff", "mp_buff2"}
+            self.policy.busy_until = time.monotonic() + (self.config.heal_press_interval if chained else
+                                                        self.config.cast_seconds(decision.skill) + self.config.verify_seconds)
             self.policy.pending = decision, current.health(), self.policy.busy_until
             if decision.skill == "balance":
                 self.policy.last_balance = self.policy.busy_until
@@ -263,18 +366,32 @@ class Healer:
                     unknown_since = time.monotonic()
                     self.policy.follow_needed = True
                     self.policy.hp_missing_since.clear()
+                    self.loot = AutoLoot(time.monotonic())
+                    self.active_cast = None
                 states = self.observer.snapshots()
                 if self.guard_approach(states[-1] if states else None):
                     continue
                 now = time.monotonic()
                 if not states or now - states[-1].at > 1:
-                    if now - unknown_since > 10:
-                        raise RuntimeError("Нет свежих наблюдений хилера более 10 секунд")
+                    if now >= next_log:
+                        self.report("Нет свежих наблюдений: ожидание фонового OCR без ввода")
+                        next_log = now + 2
                     self.controller.wait(self.config.poll_seconds)
                     continue
                 for state in states:
                     self.policy.ingest(state)
+                reader = self.observer.reader
+                if isinstance(reader, HealerReader):
+                    with reader.profile_lock:
+                        matches = states[-1].profile_revision == reader.revision
+                        self.own, self.party = reader.own, reader.party
+                    if not matches:
+                        self.controller.wait(self.config.poll_seconds)
+                        continue
                 state = self.policy.monitored_state(states[-1])
+                if self.config.aura_enabled and state.hp is not None and state.hp > 0 and state.mp is not None:
+                    self.aura.tick(time.monotonic())
+                self.cancel_cast_if_unneeded(state, now)
                 decision = self.policy.decide(state, now)
                 state = self.policy.monitored_state(state)
                 if self.policy.roster_warning and self.policy.roster_warning != last_warning:
@@ -287,8 +404,8 @@ class Healer:
                     next_state = now + .2
                 if state.hp is not None and state.mp is not None:
                     unknown_since = now
-                elif now - unknown_since > 10 and now >= self.policy.busy_until:
-                    raise RuntimeError("Собственные HP/MP неизвестны более 10 секунд")
+                elif now - unknown_since > 10 and now >= next_log:
+                    self.report("Собственные HP/MP потеряны: ожидание фонового перепоиска без ввода")
                 if now >= next_log:
                     text = format_state(self.policy, state, decision, now)
                     logger.debug(text)
@@ -296,6 +413,7 @@ class Healer:
                         self.notify(text)
                     next_log = now + 2
                 if decision.kind not in {"wait", "stop"}:
+                    self.loot.interrupt(now)
                     try:
                         self.execute(decision, state)
                     except TargetChanged as exc:
@@ -303,11 +421,35 @@ class Healer:
                 if decision.kind == "stop":
                     if state.hp == 0:
                         self.approach_until = None
+                        self.aura.on = False
                     raise RuntimeError(decision.reason)
-                self.controller.wait(self.config.poll_seconds)
+                if self.config.auto_loot and decision.kind == "wait":
+                    try:
+                        current = self.latest()
+                    except TargetChanged:
+                        self.controller.wait(self.config.poll_seconds)
+                        continue
+                    revised = self.policy.decide(current, time.monotonic())
+                    safe = (revised.kind == "wait" and time.monotonic() >= self.policy.busy_until
+                            and current.hp is not None and current.hp > 0 and current.mp is not None
+                            and not self.policy.stun_suspected and not self.policy.emergency_slots(time.monotonic())
+                            and not any(self.policy.needs_single(current, target) for target in current.health()))
+                    if not safe:
+                        self.loot.interrupt(now)
+                    elif self.loot.due(time.monotonic()):
+                        self.controller.key(self.config.loot_key, 100)
+                        self.loot.committed(time.monotonic())
+                        logger.debug("Автолут: %s; в серии осталось %s", self.config.loot_key, self.loot.remaining)
+                wait = self.config.poll_seconds
+                if self.config.auto_loot and self.loot.remaining:
+                    wait = min(wait, max(.01, self.loot.next_at - time.monotonic()))
+                self.controller.wait(wait)
             self.stop_approach("время сценария истекло")
         finally:
             try:
+                if self.config.aura_enabled and self.aura.on and not self.controller.stopped.is_set() and not self.controller.paused.is_set():
+                    self.aura.after(time.monotonic(), replace=True)
+                    self.aura.tick(time.monotonic())
                 if not self.controller.paused.is_set() and not self.controller.stopped.is_set():
                     self.stop_approach("завершение сценария")
             except Exception:

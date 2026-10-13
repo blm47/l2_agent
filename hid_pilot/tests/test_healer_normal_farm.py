@@ -46,14 +46,14 @@ def test_single_aoe_burst_uses_free_group_not_mass_major():
     assert decision.skill == "group"
 
 
-@pytest.mark.parametrize("mp,ready,expected", [(.59, True, True), (.6, True, False), (.3, False, False)])
-def test_invocation_uses_sixty_percent_threshold_quiet_window_and_cooldown(mp, ready, expected):
+@pytest.mark.parametrize("mp,ready,expected", [(.79, True, True), (.8, True, False), (.3, False, False)])
+def test_invocation_uses_eighty_percent_threshold_quiet_window_and_cooldown(mp, ready, expected):
     policy = normal_policy()
-    for i in range(27):
+    for i in range(151):
         policy.ingest(snapshot(at=i * .2, mp=mp))
     if not ready:
         policy.ready_at["invocation"] = 100.
-    decision = policy.decide(snapshot(at=5.4, mp=mp), 5.4)
+    decision = policy.decide(snapshot(at=30., mp=mp), 30.)
     assert (decision.skill == "invocation") is expected
 
 
@@ -101,7 +101,7 @@ def test_follow_selects_once_f1_then_returns_cursor_to_random_center(monkeypatch
     order = []
     controller.click.side_effect = lambda *args, **kwargs: order.append("click")
     controller.key.side_effect = lambda *args: order.append("F1")
-    controller.move.side_effect = lambda *args: order.append("center")
+    controller.move.side_effect = lambda *args, **kwargs: order.append("center")
     healer.execute(HealDecision(kind="follow", target="@slot1", reason="test"), state)
     assert order == ["click", "F1", "center"]
     controller.click.assert_called_once()

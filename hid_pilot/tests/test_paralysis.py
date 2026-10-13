@@ -62,6 +62,30 @@ def test_other_icons_and_icons_outside_party_band_do_not_match(tmp_path):
     assert detector.read(image, (1, 2, 3)) == ()
 
 
+def test_reference_resolution_does_not_restrict_current_party_window(tmp_path):
+    image, _own, party, original = scene(tmp_path)
+    path = tmp_path / "paralysis.json"
+    reference = original.profile.model_copy(update={"width": 3840, "height": 2160})
+    path.write_text(reference.model_dump_json(), encoding="utf-8")
+    detector = ParalysisDetector(path, party)
+    assert (detector.profile.width, detector.profile.height) == (party.width, party.height)
+    insert_icon(image, detector, 3)
+    assert detector.read(image, (1, 2, 3)) == (3,)
+
+
+def test_high_resolution_icon_is_scaled_to_actual_debuff_size(tmp_path):
+    image, _own, party, original = scene(tmp_path)
+    enlarged = cv2.resize(original.template, (276, 268), interpolation=cv2.INTER_NEAREST)
+    path = tmp_path / "large.png"
+    assert cv2.imwrite(str(path), enlarged)
+    profile = original.profile.model_copy(update={"width": 3840, "height": 2160, "template": path.name})
+    config = tmp_path / "large.json"
+    config.write_text(profile.model_dump_json(), encoding="utf-8")
+    detector = ParalysisDetector(config, party)
+    insert_icon(image, original, 6, 22)
+    assert detector.read(image, (1, 6)) == (6,)
+
+
 def test_dark_icon_corners_can_contain_game_background(tmp_path):
     image, _own, _party, detector = scene(tmp_path)
     insert_icon(image, detector, 7)
@@ -111,6 +135,7 @@ def test_resized_frame_is_rejected(tmp_path):
 def test_fast_observer_keeps_sampling_while_own_ocr_is_busy(tmp_path, monkeypatch):
     image, own, party, detector = scene(tmp_path)
     reader = TrainReader(own, party, detector)
+    reader.identities.update = Mock()
     desktop = Mock()
     desktop.capture.return_value = image
     ocr_busy = threading.Event()
@@ -123,7 +148,7 @@ def test_fast_observer_keeps_sampling_while_own_ocr_is_busy(tmp_path, monkeypatc
     ocr = Mock()
     ocr.prepare.side_effect = prepare
     ocr.lock = threading.Lock()
-    monkeypatch.setattr("hid_pilot.train_observer.shared_numbers", lambda: ocr)
+    monkeypatch.setattr("hid_pilot.healer_observer.shared_numbers", lambda: ocr)
     observer = TrainObserver(desktop, reader, lambda: .1, lambda: False)
     observer.start()
     try:

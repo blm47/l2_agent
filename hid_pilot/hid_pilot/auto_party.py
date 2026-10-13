@@ -66,6 +66,56 @@ def find_party(image: np.ndarray, reader: NumbersReader | None,
                          and text.strip().upper() not in {"CP", "HP", "MP"}]
                 groups.append((cp, hp, mp, box(x, top, w, y - 2 - top),
                                names[0] if len(names) == 1 else None))
+    # Пустой MP первого участника не должен превращать вторую строку в первую.
+    complete = groups.copy()
+    for cp in bars["cp"]:
+        if any(abs(group[0][1] - cp[1]) < 3 and abs(group[0][0] - cp[0]) < 8 for group in groups):
+            continue
+        references = [group for group in complete if abs(group[0][0] - cp[0]) < 8
+                      and abs(group[0][0] + group[0][2] - cp[0] - cp[2]) < 5]
+        hp_rows = [hp for hp in bars["hp"] if 0 <= hp[1] - cp[1] - cp[3] <= 8
+                   and abs(hp[0] - cp[0]) <= max(12, cp[2] * .15)]
+        if not references or len(hp_rows) != 1:
+            continue
+        reference = min(references, key=lambda group: abs(group[0][1] - cp[1]))
+        top = max(0, cp[1] - round(reference[0][1] - reference[3].y1 * height))
+        texts = reader.detect(image[top:cp[1] - 2, cp[0]:cp[0] + cp[2]]) if reader else []
+        if any("/" in text or text.strip().upper() in {"CP", "HP", "MP"}
+               for _, text, score in texts if score >= .85):
+            continue
+        names = [text.strip() for _, text, score in texts if score >= .85 and text.strip() and not text.strip().isdigit()]
+        if not names and region is None:
+            continue
+        mp_x = cp[0] + reference[2][0] - reference[0][0]
+        mp_y = cp[1] + reference[2][1] - reference[0][1]
+        mp = (mp_x, mp_y, cp[0] + cp[2] - mp_x, reference[2][3])
+        if mp_y + mp[3] > height:
+            continue
+        groups.append((cp, hp_rows[0], mp, box(cp[0], top, cp[2], cp[1] - 2 - top),
+                       names[0] if len(names) == 1 else None))
+    if complete:
+        reference = min(complete, key=lambda group: group[0][1])
+        for hp in bars["hp"]:
+            cp_y = hp[1] - reference[1][1] + reference[0][1]
+            if cp_y < 0 or cp_y >= reference[0][1] or abs(hp[0] - reference[1][0]) > 8:
+                continue
+            if any(abs(group[0][1] - cp_y) < 3 for group in groups):
+                continue
+            cp = (reference[0][0], cp_y, reference[0][2], reference[0][3])
+            mp_y = cp_y + reference[2][1] - reference[0][1]
+            mp_rows = [mp for mp in bars["mp"] if abs(mp[1] - mp_y) < 3 and abs(mp[0] - reference[2][0]) < 8]
+            if len(mp_rows) != 1:
+                continue
+            top = max(0, cp_y - round(reference[0][1] - reference[3].y1 * height))
+            texts = reader.detect(image[top:cp_y - 2, cp[0]:cp[0] + cp[2]]) if reader else []
+            if any("/" in text or text.strip().upper() in {"CP", "HP", "MP"}
+                   for _, text, score in texts if score >= .85):
+                continue
+            names = [text.strip() for _, text, score in texts if score >= .85 and text.strip() and not text.strip().isdigit()]
+            if not names and region is None:
+                continue
+            groups.append((cp, hp, mp_rows[0], box(cp[0], top, cp[2], cp_y - 2 - top),
+                           names[0] if len(names) == 1 else None))
     results = []
     groups.sort(key=lambda group: group[0][1])
     for cp, hp, mp, name, text in sorted(groups, key=lambda group: group[0][1]):

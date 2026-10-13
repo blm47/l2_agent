@@ -1,18 +1,30 @@
 # Хилер: перед START выполните автопоиск HP/MP/CP и пати в окне хилера.
 # Профили привязаны к размеру окна. Нужна прошивка HID_PILOT_V2.
-# Выделение ведущего одним ЛКМ, F1 подходит к нему на игровую дистанцию 400.
+# Выделение ведущего одним ЛКМ, клавиша 9 подходит к нему на игровую дистанцию 400.
 set follow_slot 1
 set follow_seconds 4
-set follow_key F1
+set follow_key 9
+set follow_select_mouse false
 set cursor_jitter 0.15
 set party_click_jitter 0.001
 set mp_buff_key F11
+set humanize true
+set chain_heals true
+set cancel_unneeded_casts false
+set self_rescue_key 4
+set self_rescue_cast 0.2
+set self_rescue_cooldown 8
+set aura_enabled true
+set aura_key F8
+set heal_press_interval 0.15
+set auto_loot true
+set loot_key C
 set mp_buff_cooldown 900
 set mp_buff_cast 1
 set mp_buff2_key F10
 set mp_buff2_cooldown 900
 set mp_buff2_cast 1
-set invocation_mp 0.60
+set invocation_mp 0.80
 set maintain_hp 0.70
 set support_start_delay 30
 set stun_probe_key SPACE
@@ -30,6 +42,7 @@ set battle_key 2
 set major_key 3
 set mass_major_key F2
 set group_key F6
+set group_buff_seconds 15
 set avatar_key NUM7
 set invocation_key -
 
@@ -41,7 +54,7 @@ set heal_hp 0.80
 set rapid_drop 0.08
 set low_mp 0.10
 set minimum_cast_mp 0.02
-set quiet_seconds 5
+set quiet_seconds 30
 set chase_seconds 30
 # При лимите или потере ведущего бег отменяется нажатием S на 1 секунду.
 set chase_probe_seconds 3
