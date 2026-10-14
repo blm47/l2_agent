@@ -14,7 +14,8 @@ class PlayerCandidate(BaseModel):
     evidence: str
 
 
-def find_player_panels(image: np.ndarray, reader: NumbersReader, top_only: bool = True) -> list[PlayerCandidate]:
+def find_player_panels(image: np.ndarray, reader: NumbersReader, top_only: bool = True,
+                       target_hp: BarBox | None = None) -> list[PlayerCandidate]:
     height, width = image.shape[:2]
     scan = image[:max(1, round(height * .3))] if top_only else image
     lines = []
@@ -46,4 +47,18 @@ def find_player_panels(image: np.ndarray, reader: NumbersReader, top_only: bool 
                      x2=min(width, high[0] + 3) / width, y2=min(height, high[1] + 3) / height)
         candidates.append(PlayerCandidate(box=box, evidence=" / ".join(line[2] for line in group)
                                           + f" · OCR {min(line[3] for line in group):.0%}; подтвердите игрока"))
+    if target_hp is not None:
+        # Имя монстра занимает ту же область, что ник игрока, но может быть одной строкой.
+        headers = [line for line in lines
+                   if target_hp.y1 * height - height * .08 <= line[0][1] < line[1][1] <= target_hp.y1 * height
+                   and line[0][0] >= (target_hp.x1 - .12) * width
+                   and line[1][0] <= (target_hp.x2 + .04) * width]
+        if headers:
+            low = np.min([line[0] for line in headers], axis=0)
+            high = np.max([line[1] for line in headers], axis=0)
+            box = BarBox(x1=max(0, low[0] - 3) / width, y1=max(0, low[1] - 3) / height,
+                         x2=min(width, high[0] + 3) / width,
+                         y2=min(height, high[1] + 3, target_hp.y1 * height - 1) / height)
+            candidates.append(PlayerCandidate(box=box, evidence="Общая область имени над HP: "
+                                              + " / ".join(line[2] for line in headers) + "; подтвердите цель"))
     return candidates

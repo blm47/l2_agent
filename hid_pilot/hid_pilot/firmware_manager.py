@@ -22,7 +22,7 @@ logger = logging.getLogger("hid_pilot.firmware")
 BOARDS = {"raspberry_pi_pico": "Raspberry Pi Pico (RP2040)",
           "raspberry_pi_pico_w": "Raspberry Pi Pico W (RP2040)"}
 FIRMWARE_FILES = ("control.py", "boot.py", "code.py")
-PROTOCOL = "HID_PILOT_V3"
+PROTOCOL = "HID_PILOT_V4"
 RP2040_FAMILY = 0xE48BFF56
 
 
@@ -187,9 +187,9 @@ def install_scripts(volume: PicoVolume, notify: Callable[[str], None],
             path.replace(root / name)
             if (root / name).read_bytes() != payloads[name]:
                 raise OSError(f"Checksum {name} на Pico не совпадает")
-        notify("HID_PILOT_V3 записана и файлы проверены. Безопасно извлеките CIRCUITPY, "
+        notify("HID_PILOT_V4 записана и файлы проверены. Безопасно извлеките CIRCUITPY, "
                "переподключите Pico без BOOTSEL и нажмите «Проверить прошивку».")
-        logger.info("Файлы HID_PILOT_V3 установлены: %s", volume.root)
+        logger.info("Файлы HID_PILOT_V4 установлены: %s", volume.root)
     except Exception:
         logger.exception("Установка Pico прервана; резервная копия: %s", backup)
         notify(f"Установка прервана. Резервная копия: {backup}. Проверьте плату перед запуском.")

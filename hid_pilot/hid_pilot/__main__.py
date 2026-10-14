@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self.auto_search.clicked.connect(self.auto_numbers)
         self.party.setup_requested.connect(self.auto_numbers)
         self.party.manual_requested.connect(lambda: self.auto_numbers(manual_party=True))
+        self.party.own_requested.connect(lambda: self.auto_numbers(manual_stats=True))
         self.auto_scope = QComboBox()
         self.auto_scope.addItem("Верхняя часть окна", True)
         self.auto_scope.addItem("Всё окно", False)
@@ -264,9 +265,16 @@ class MainWindow(QMainWindow):
         logging.getLogger("hid_pilot").setLevel(getattr(logging, level))
 
     def show_observation(self, payload: dict) -> None:
+        if "text" in payload:
+            self.party_state.setPlainText(payload["text"])
+            self.party.status.setText(payload["text"])
+            return
         state = payload["state"]
         text = format_statistics({"cp": state.cp, "hp": state.hp, "mp": state.mp},
-                                 {"name": state.selected_name, "class": state.selected_class, "clan": state.selected_clan},
+                                 {"name": state.selected_name, "class": state.selected_class, "clan": state.selected_clan,
+                                  "type": state.target.kind if state.target else None,
+                                  "hp": state.target.hp if state.target else None,
+                                  "dead": state.target.dead if state.target else None},
                                  list(state.members), payload.get("rates", {}), payload["reason"])
         self.party_state.setPlainText(text)
         self.party.status.setText(text)
@@ -376,7 +384,7 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(350, capture)
 
-    def auto_numbers(self, manual_party: bool = False) -> None:
+    def auto_numbers(self, manual_party: bool = False, manual_stats: bool = False) -> None:
         if self.auto_busy or (self.worker is not None and self.worker.is_alive()):
             self.show_status("Перед автопоиском остановите исполнение сценария")
             return
@@ -411,6 +419,11 @@ class MainWindow(QMainWindow):
                 self.review_party({"generation": generation, "image": image,
                                    "target": target, "path": path})
                 return
+            if manual_stats:
+                self.review_auto_numbers({"generation": generation, "image": image,
+                                          "target": target, "path": path, "candidates": [],
+                                          "manual_stats": True})
+                return
 
             def search() -> None:
                 from hid_pilot.auto_numbers import find_numbers
@@ -421,7 +434,10 @@ class MainWindow(QMainWindow):
                 try:
                     payload["candidates"] = find_numbers(image, shared_numbers(), top_only)
                     payload["party_candidates"] = find_party(image, shared_numbers())
-                    payload["player_candidates"] = find_player_panels(image, shared_numbers(), top_only)
+                    target_boxes = [item.box for item in payload["candidates"] if item.kind == "target_hp"]
+                    payload["player_candidates"] = find_player_panels(
+                        image, shared_numbers(), top_only,
+                        target_boxes[0] if len(target_boxes) == 1 else None)
                 except Exception as exc:
                     logger.exception("Автопоиск OCR завершился с ошибкой")
                     payload["error"] = str(exc)
@@ -486,15 +502,6 @@ class MainWindow(QMainWindow):
             if (current.pid, current.rect) != (target.pid, target.rect) or self.path != payload["path"]:
                 raise RuntimeError("Окно/сценарий изменились — повторите автопоиск")
             image, candidates = payload["image"], payload["candidates"]
-            self.activateWindow()
-            dialog = AutoReview(image, candidates, self, payload.get("party_candidates", []),
-                                payload.get("player_candidates", []))
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                self.show_status("Автопоиск отменён; профиль не изменён")
-                return
-            current = snapshot(target.hwnd)
-            if (current.pid, current.rect) != (target.pid, target.rect):
-                raise RuntimeError("Геометрия окна изменилась — повторите автопоиск")
             height, width = image.shape[:2]
             profile_path = payload["path"].parent / "farm-bars.json"
             profile = BarProfile(width=width, height=height)
@@ -502,17 +509,42 @@ class MainWindow(QMainWindow):
                 previous = BarProfile.model_validate_json(profile_path.read_text("utf-8"))
                 if (previous.width, previous.height) == (width, height):
                     profile = previous
+            self.activateWindow()
+            dialog = AutoReview(image, candidates, self, payload.get("party_candidates", []),
+                                payload.get("player_candidates", []), initial_profile=profile)
+            if payload.get("manual_stats"):
+                dialog.setWindowTitle("Ручная настройка статов и уровней")
+                dialog.edit_own_regions()
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                self.show_status("Автопоиск отменён; профиль не изменён")
+                return
+            current = snapshot(target.hwnd)
+            if (current.pid, current.rect) != (target.pid, target.rect):
+                raise RuntimeError("Геометрия окна изменилась — повторите автопоиск")
             profile.numbers = dialog.boxes.copy()
+            level_boxes = getattr(dialog, "level_boxes", {})
+            if isinstance(level_boxes, dict):
+                for name, box in level_boxes.items():
+                    setattr(profile, name, box)
             profile.target_player_panel = dialog.target_player_panel
+            target_config = getattr(dialog, "target_config", {})
+            if isinstance(target_config, dict) and target_config:
+                profile = BarProfile.model_validate(profile.model_dump() | target_config)
+            if profile.target_hp_presence_box is None:
+                profile.target_hp_presence_box = profile.numbers.get("target_hp")
             # Новый автопоиск заменяет старые ручные ROI, включая fallback.
-            profile.bars.clear()
-            profile.target_zero_box = None
-            profile.target_zero_mask = []
+            if payload.get("manual_stats"):
+                for name in dialog.boxes:
+                    profile.bars.pop(name, None)
+            else:
+                profile.bars.clear()
+                profile.target_zero_box = None
+                profile.target_zero_mask = []
             party = dialog.party_profile()
             party_path = payload["path"].parent / "party.json"
             if party is not None:
                 party_path.write_text(party.model_dump_json(indent=2), encoding="utf-8")
-            elif party_path.exists():
+            elif party_path.exists() and not payload.get("manual_stats"):
                 party_path.unlink()
             self.party.enabled.setChecked(False)
             self.party.reset()

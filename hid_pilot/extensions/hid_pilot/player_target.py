@@ -10,6 +10,7 @@ import numpy as np
 from hid_pilot.bars import BarProfile, text_mask
 from hid_pilot.numbers import shared_numbers
 from hid_pilot.party import PartyMember, PartyProfile, read_party
+from hid_pilot.target import TargetObservation, TargetReader
 
 
 class PlayerIdentityReader:
@@ -24,6 +25,7 @@ class PlayerIdentityReader:
         self.generation = 0
         self.party_signature: tuple[bytes, ...] | None = None
         self.names_checked_at = float("-inf")
+        self.target_reader = TargetReader(own)
 
     def invalidate(self) -> None:
         # После собственного выделения другой цели старый буфер уже не подтверждает таргет.
@@ -32,17 +34,23 @@ class PlayerIdentityReader:
             self.target = None
             self.buffered_target.clear()
             self.target_seen_at = None
+            self.target_reader.cached = None
+            self.target_reader.cached_signature = None
+            self.target_reader.last_player_name = None
+            self.target_reader.last_monster_name = None
 
     def signature(self, image: np.ndarray, slot: int | None = None) -> bytes:
-        box = self.party.box("name", slot - 1) if slot is not None else self.own.target_player_panel
+        if slot is None:
+            self.target_reader.profile = self.own
+            return self.target_reader.signature(image)
+        box = self.party.box("name", slot - 1)
         return text_mask(self.own.crop(image, box)).tobytes() if box is not None else b""
 
-    def update(self, image: np.ndarray) -> None:
+    def update(self, image: np.ndarray, at: float | None = None) -> TargetObservation:
         with self.lock:
             generation = self.generation
             previous_signature = self.party_signature
             previous_names = self.names.copy()
-            previous_target = self.target
             checked_at = self.names_checked_at
         reader = shared_numbers()
         signature = tuple(self.signature(image, slot) for slot in range(1, 9))
@@ -55,26 +63,14 @@ class PlayerIdentityReader:
             members = read_party(image, self.party, reader)
             names = {member.slot: (signature[member.slot - 1], member.name, member.confidence)
                      for member in members}
+        self.target_reader.profile = self.own
         target_signature = self.signature(image)
-        if previous_target is not None and previous_target[0] == target_signature and previous_target[1]:
-            with self.lock:
-                self.names = names
-                self.party_signature = signature
-                if not reuse_names:
-                    self.names_checked_at = now
-            return
-        crop = self.own.crop(image, self.own.target_player_panel) if self.own.target_player_panel is not None else None
-        rows = sorted([(float(np.mean(np.asarray(points)[:, 1])), text.strip(), score)
-                       for points, text, score in (reader.detect(crop) if crop is not None else [])
-                       if score >= .85 and text.strip()], key=lambda row: row[0])
+        observation = self.target_reader.read(image, at, reader).model_copy(update={"epoch": generation})
         values: dict[str, object] = {}
-        # Ник и класс обязательны; клан может отсутствовать. Не угадываем пропущенные строки.
-        if (len(rows) in {2, 3} and rows[0][2] >= .9
-                and not any(char.isdigit() for char in rows[1][1])
-                and all("/" not in row[1] for row in rows)):
-            values = {"selected_name": rows[0][1], "selected_class": rows[1][1],
-                      "selected_clan": rows[2][1] if len(rows) == 3 else None,
-                      "selected_confidence": min(rows[0][2], rows[1][2])}
+        if observation.name:
+            values = {"selected_name": observation.name, "selected_class": observation.player_class,
+                      "selected_clan": observation.clan, "selected_confidence": observation.confidence,
+                      "target": observation}
         with self.lock:
             self.names = names
             self.party_signature = signature
@@ -82,6 +78,8 @@ class PlayerIdentityReader:
                 self.names_checked_at = now
             if generation == self.generation:
                 self.target = target_signature, values
+                return observation
+        return TargetObservation(at=observation.at)
 
     def apply(self, image: np.ndarray, members: list[PartyMember], at: float | None = None
               ) -> tuple[list[PartyMember], dict[str, object]]:
@@ -95,6 +93,11 @@ class PlayerIdentityReader:
                 member = member.model_copy(update={"name": cached[1], "confidence": cached[2]})
             result.append(member)
         selected = target[1] if target is not None and target[0] == self.signature(image) else {}
+        if self.own.target_panel is not None and not selected:
+            with self.lock:
+                self.buffered_target.clear()
+                self.target_seen_at = None
+            return result, {}
         with self.lock:
             if selected:
                 self.buffered_target = selected.copy()
@@ -104,4 +107,9 @@ class PlayerIdentityReader:
             else:
                 self.buffered_target.clear()
                 self.target_seen_at = None
+        # Для статистики нельзя переносить старую личность на кадр новой цели.
+        if "target" in selected:
+            observation = selected["target"]
+            if target is None or target[0] != self.signature(image) or not 0 <= now - observation.at <= 1:
+                selected = {key: value for key, value in selected.items() if key != "target"}
         return result, selected

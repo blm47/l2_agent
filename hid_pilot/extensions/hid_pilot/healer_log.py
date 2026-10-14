@@ -72,7 +72,10 @@ def format_state(policy: HealPolicy, state: HealerSnapshot, decision: HealDecisi
         right = cells[offset + 1].center(width) if offset + 1 < len(cells) else " " * width
         lines.append(f"{left} │ {right}")
     lines.append(f"Действие: {decision.reason}")
-    if state.selected_name:
+    if state.target is not None and state.target.kind in {"monster", "npc"}:
+        lines.append(f"Выбрана цель: {state.target.kind} | {state.target.name or '?'} | "
+                     f"HP={state.target.hp}, смерть={state.target.dead}")
+    elif state.selected_name:
         lines.append(f"Выбран игрок: {state.selected_name} | {state.selected_class or '?'} | "
                      f"{state.selected_clan or 'без клана'}")
     if policy.roster_warning:

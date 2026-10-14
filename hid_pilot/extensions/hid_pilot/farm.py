@@ -12,7 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from hid_pilot.bars import BarProfile
 from hid_pilot.controller import ActionController
+from hid_pilot.mob_statistics import MobStatistics
+from hid_pilot.monster_catalogue import MonsterCatalogue
+from hid_pilot.party import PartyProfile, read_party
+from hid_pilot.party_statistics import format_statistics
+from hid_pilot.paths import user_data_dir
 from hid_pilot.script import KEYS
+from hid_pilot.target import TargetReader
 
 logger = logging.getLogger("hid_pilot.farm")
 
@@ -30,7 +36,12 @@ def run_extension(controller: ActionController, base: Path, args: tuple[str, ...
     if remaining <= 0:
         raise RuntimeError("Достигнут лимит сценария")
     config = config.model_copy(update={"max_seconds": min(config.max_seconds, remaining)})
-    Farmer(controller, profile, config, notify).run()
+    farmer = Farmer(controller, profile, config, notify)
+    farmer.setup_observation(base)
+    try:
+        farmer.run()
+    finally:
+        farmer.close_observation()
 
 
 class ReacquireTarget(Exception):
@@ -68,8 +79,8 @@ class FarmConfig(BaseModel):
     observation_delay: float = Field(default=.5, ge=.2, le=5)
     observation_movement: bool = True
     heal_attempts: int = Field(default=5, ge=1, le=20)
-    cycles: int = Field(default=1000, ge=1, le=1000)
-    max_seconds: float = Field(default=36000, ge=1, le=36000)
+    cycles: int = Field(default=1000, ge=1, le=10000)
+    max_seconds: float = Field(default=36000, ge=1, le=360000)
 
     @field_validator("next_target", "attack", "melee", "loot", "heal", "rest")
     @classmethod
@@ -95,7 +106,7 @@ class Farmer:
         ):
             raise RuntimeError("Фарм с клавишей = требует прошивки HID_PILOT_V1; ввод не начат")
         self.profile = profile
-        if isinstance(profile.numbers, dict) and profile.numbers:
+        if isinstance(profile, BarProfile) and (profile.numbers or profile.target_panel or profile.target_player_panel):
             from hid_pilot.numbers import shared_numbers
             shared_numbers().prepare()
         self.config = config
@@ -105,8 +116,42 @@ class Farmer:
         self.sitting = False
         self.target_pending = False
         self.observation_details: dict[str, str] = {}
+        self.mob_statistics = MobStatistics(self.clock())
+        self.target_reader = TargetReader(profile) if isinstance(profile, BarProfile) else None
+        self.last_target = None
+        self.own_cp: float | None = None
+        self.party_profile: PartyProfile | None = None
+        self.current_action = "Фарм"
+        self.identity_cache = None
+        self.observation_generation = controller.pause_generation
+        self.display_data: tuple | None = None
+        self.catalogue: MonsterCatalogue | None = None
+
+    def setup_observation(self, base: Path) -> None:
+        path = base / "party.json"
+        if path.exists():
+            self.party_profile = PartyProfile.model_validate_json(path.read_text("utf-8"))
+        self.catalogue = MonsterCatalogue(user_data_dir() / "monsters.sqlite3")
+        self.mob_statistics.database = self.catalogue.path
+        from hid_pilot.farm_observer import FarmIdentityCache
+        self.identity_cache = FarmIdentityCache(self.profile, self.party_profile, self.catalogue)
+        if self.profile.target_panel is None and self.profile.target_player_panel is None:
+            self.report("Область имени цели не настроена: убийства учитываются без имени; для /target и оценки урона настройте панель цели")
+        if self.profile.target_level is None:
+            self.report("Область уровня цели не настроена: выделите цифры уровня в ручной разметке статов")
+
+    def close_observation(self) -> None:
+        if self.identity_cache is not None:
+            self.identity_cache.close()
+
+    def invalidate_target(self) -> None:
+        self.mob_statistics.reset_target()
+        self.last_target = None
+        if self.identity_cache is not None:
+            self.identity_cache.invalidate()
 
     def report(self, text: str) -> None:
+        self.current_action = text
         logger.info(text)
         self.notify(text)
 
@@ -152,10 +197,60 @@ class Farmer:
             values.append(value)
         hp, mp, target = values
         if self.clock() - started > 1:
-            raise RuntimeError("Наблюдение устарело; фарм остановлен")
+            logger.debug("Чтение HP/MP заняло больше секунды; повторяем на свежем кадре")
+            return None, None, None
         if hp == 0:
             raise RuntimeError("Собственное HP = 0; фарм остановлен")
+        if self.target_reader is not None:
+            if self.identity_cache is not None:
+                if generation != self.observation_generation:
+                    self.invalidate_target()
+                    self.observation_generation = generation
+                observation, level, members = self.identity_cache.snapshot(image, started)
+            else:
+                observation = self.target_reader.read(image, started)
+            if target is not None:
+                # Настроенная область HP приоритетна; OCR имени не должен скрывать её результат.
+                observation = observation.model_copy(update={
+                    "hp": target, "dead": self.target_reader.death(target, observation.death_marker)})
+            elif observation.hp is not None:
+                target = observation.hp
+                self.observation_details["target_hp"] = "OCR панели цели"
+            if self.clock() - started > 1:
+                return None, None, None
+            self.last_target = observation
+        if isinstance(self.profile, BarProfile):
+            self.own_cp = self.profile.read(image, "cp") if "cp" in self.profile.bars.keys() | self.profile.numbers.keys() else None
+            if self.identity_cache is None:
+                level = self.profile.read_level(image, "own_level")
+                members = []
+                if self.party_profile is not None:
+                    from hid_pilot.numbers import shared_numbers
+                    members = read_party(image, self.party_profile, shared_numbers())
+            if self.clock() - started > 1:
+                return None, None, None
+            if self.last_target is not None:
+                self.mob_statistics.observe(self.last_target, self.clock())
+            selected = self.last_target.model_dump() if self.last_target is not None else {"hp": target}
+            self.display_data = ({"hp": hp, "mp": mp, "cp": self.own_cp, "level": level}, selected, members)
+            self.publish_statistics()
         return hp, mp, target
+
+    def publish_statistics(self) -> None:
+        if self.display_data is None:
+            return
+        own, selected, members = self.display_data
+        text = format_statistics(own, selected, members, {}, self.current_action)
+        text += "\n" + self.mob_statistics.summary(self.clock())
+        if callable(getattr(self, "damage_status", None)):
+            text += "\n" + self.damage_status()
+        known = getattr(self, "known_mobs", {})
+        if known:
+            text += "\nИзвестные мобы: " + ", ".join(
+                f"{name} (ур. {level if level is not None else '?'})"
+                for name, level in list(known.items())[:10])
+        if callable(getattr(self.notify, "state", None)):
+            self.notify.state({"text": text})
 
     def press(self, key: str) -> None:
         self.controller.key(key, 100)
@@ -285,6 +380,8 @@ class Farmer:
                 continue
             finishing = target <= self.config.target_threshold or mp < self.config.mp_threshold
             self.press(self.config.melee if finishing else self.config.attack)
+            if self.last_target is not None and self.catalogue is None:
+                self.mob_statistics.remember(self.last_target)
             attacks += 1
             self.guarded_wait(self.config.approach_delay if finishing else self.config.attack_delay)
             _, _, target = self.observe()

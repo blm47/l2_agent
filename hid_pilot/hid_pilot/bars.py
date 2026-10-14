@@ -2,9 +2,14 @@
 Оценка заполнения подтверждённых полос по свежему BGR-кадру.
 """
 
+from typing import TYPE_CHECKING, Annotated, Literal
+
 import cv2
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+if TYPE_CHECKING:
+    from hid_pilot.numbers import NumbersReader
 
 
 class BarBox(BaseModel):
@@ -28,6 +33,53 @@ class BarProfile(BaseModel):
     bars: dict[str, BarBox] = Field(default_factory=dict)
     numbers: dict[str, BarBox] = Field(default_factory=dict)
     target_player_panel: BarBox | None = None
+    own_level: BarBox | None = None
+    target_level: BarBox | None = None
+    target_panel: BarBox | None = None
+    target_hp_presence_box: BarBox | None = None
+    target_kind_names: dict[str, Literal["monster", "npc"]] = Field(default_factory=dict)
+    target_dead_marker: BarBox | None = None
+    target_dead_mask: list[Annotated[str, Field(min_length=48, max_length=48, pattern="^[01]+$")]] = Field(
+        default_factory=list, max_length=48)
+
+    def calibrate_dead_marker(self, image: np.ndarray, box: BarBox) -> None:
+        crop = self.crop(image, box)
+        mask = red_marker_mask(crop)
+        ratio = float(np.mean(mask))
+        if not .1 <= ratio <= .9:
+            raise ValueError("Выделите красный череп внутри портрета, без кольца и текста")
+        self.target_dead_marker = box
+        self.target_dead_mask = ["".join("1" if pixel else "0" for pixel in row) for row in mask]
+
+    def read_level(self, image: np.ndarray, name: Literal["own_level", "target_level"],
+                   reader: "NumbersReader | None" = None) -> int | None:
+        """
+        Читает только явно размеченный уровень, не выводя его из HP или имени.
+        """
+        from hid_pilot.numbers import shared_numbers
+
+        box = getattr(self, name)
+        if box is None or image.shape[:2] != (self.height, self.width):
+            return None
+        rows = (reader or shared_numbers()).detect(self.crop(image, box))
+        values = [int(text.strip()) for _, text, score in rows
+                  if score >= .9 and text.strip().isascii() and text.strip().isdigit()
+                  and 1 <= int(text.strip()) <= 150]
+        return values[0] if len(values) == 1 else None
+
+    def dead_marker_visible(self, image: np.ndarray) -> bool:
+        if self.target_dead_marker is None or len(self.target_dead_mask) != 48:
+            return False
+        rows = self.target_dead_mask
+        if any(len(row) != 48 or set(row) - {"0", "1"} for row in rows):
+            return False
+        expected = np.array([[char == "1" for char in row] for row in rows])
+        crop = self.crop(image, self.target_dead_marker)
+        if min(crop.shape[:2]) < 3:
+            return False
+        current = red_marker_mask(crop)
+        union = np.count_nonzero(current | expected)
+        return union > 0 and np.count_nonzero(current & expected) / union >= .9
     target_zero_box: BarBox | None = None
     target_zero_mask: list[str] = Field(default_factory=list, max_length=100)
 
@@ -86,6 +138,14 @@ def text_mask(bgr: np.ndarray) -> np.ndarray:
     low = np.min(bgr, axis=2)
     high = np.max(bgr, axis=2)
     return (low >= 125) & (high.astype(int) - low.astype(int) <= 65)
+
+
+def red_marker_mask(bgr: np.ndarray) -> np.ndarray:
+    if min(bgr.shape[:2]) < 3:
+        raise ValueError("Область маркера смерти слишком мала")
+    sample = cv2.resize(bgr, (48, 48), interpolation=cv2.INTER_AREA)
+    blue, green, red = sample.astype(int).transpose(2, 0, 1)
+    return (red >= 45) & (red > green * 1.6) & (red > blue * 1.6)
 
 
 def bar_fraction(bgr: np.ndarray, name: str) -> float | None:

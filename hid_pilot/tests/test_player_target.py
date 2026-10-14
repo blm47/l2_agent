@@ -61,6 +61,30 @@ def test_explicit_selection_invalidates_old_target_buffer(monkeypatch):
     assert observer.read(image, 1.1).selected_name is None
 
 
+def test_monster_replaces_player_without_inheriting_class_or_clan(monkeypatch):
+    reader, own, party = identities(monkeypatch, [row("originalNutta", 2), row("Hawkeye", 23), row("AES", 45)])
+    own.target_panel = own.target_player_panel
+    image = scene()
+    reader.update(image, 1.)
+    observer = HealerReader(own, party)
+    observer.identities = reader
+    assert observer.read(image, 1.).target.kind == "player"
+    image[600:605, 30:40] = 255
+    assert observer.read(image, 1.1).target is None
+    assert not observer.read(image, 1.1).follows_selected("@slot1")
+    from hid_pilot import player_target
+
+    ocr = player_target.shared_numbers()
+    ocr.detect.side_effect = None
+    ocr.detect.return_value = [row("Gremlin", 2), row("0 / 58", 45)]
+    reader.update(image, 1.2)
+    state = observer.read(image, 1.2)
+    assert state.target.kind == "monster" and state.target.dead is True
+    assert state.selected_name == "Gremlin"
+    assert state.selected_class is None and state.selected_clan is None
+    assert not state.follows_selected("@slot1")
+
+
 def test_unchanged_names_and_player_panel_do_not_repeat_ocr(monkeypatch):
     reader, _own, _party = identities(monkeypatch, [row("originalNutta", 2), row("Hawkeye", 23)])
     from hid_pilot import player_target

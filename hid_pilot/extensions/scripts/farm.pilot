@@ -1,9 +1,10 @@
+# Фарм магом (совместимое прежнее имя)
 # Настройки клавиш, порогов и задержек.
 # Макрос 2 выбирает себя и лечит; после лечения цель выбирается заново.
-set next_target 3
-set attack R
+set next_target 6
+set attack 3
 set melee 4
-set loot 5
+set loot C
 set heal 2
 set rest =
 set pickup_loot true

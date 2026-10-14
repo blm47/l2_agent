@@ -96,8 +96,8 @@ def test_healer_loop_finishes_at_ten_hour_deadline(monkeypatch, tmp_path):
 def test_train_uses_f10_during_collection_without_touching_tank():
     from test_train_healer import collecting
 
-    policy = collecting()
+    policy = collecting(.8)
     policy.support_ready_at = 0
     policy.ready_at["mp_buff"] = 100
-    decision = policy.decide(state(2.7, tank=.3), 2.7)
+    decision = policy.decide(state(2.7, tank=.8), 2.7)
     assert (decision.skill, decision.target) == ("mp_buff2", None)

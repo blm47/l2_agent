@@ -10,7 +10,7 @@ import numpy as np
 from hid_pilot.controller import ActionController
 from hid_pilot.desktop import match_image
 from hid_pilot.extensions import extension_commands, extension_symbol
-from hid_pilot.script import Instruction
+from hid_pilot.script import Instruction, number
 
 logger = logging.getLogger("hid_pilot.runner")
 
@@ -25,8 +25,9 @@ class Runner:
         self.found: tuple[float, float] | None = None
         self.found_at = 0.0
         self.steps = 0
-        self.deadline = time.monotonic() + 36000
         self.variables = variables or {}
+        self.max_seconds = number(self.variables.get("max_seconds", "36000"), 1, 360000)
+        self.deadline = time.monotonic() + self.max_seconds
         self.extensions = extension_commands()
 
     def run(self, instructions: tuple[Instruction, ...]) -> None:
@@ -34,7 +35,7 @@ class Runner:
             self.controller.checkpoint()
             self.steps += 1
             if self.steps > 100_000 or time.monotonic() > self.deadline:
-                raise RuntimeError("Достигнут лимит сценария: 100000 шагов / 10 часов")
+                raise RuntimeError(f"Достигнут лимит сценария: 100000 шагов / {self.max_seconds / 3600:g} часов")
             self.notify(f"Строка {item.line}: {item.operation}")
             logger.info("Строка %s: %s", item.line, item.operation)
             args = item.args

@@ -138,6 +138,57 @@ def test_editor_validation_without_hid(monkeypatch):
         window.close()
 
 
+def test_target_calibration_saves_type_npc_names_and_death_marker():
+    from test_target_observation import dead_image
+    from hid_pilot.bars import BarProfile
+
+    app = QApplication.instance() or QApplication([])
+    image = dead_image()
+    dialog = AutoReview(image, [], None)
+    panel = BarBox(x1=0, y1=0, x2=1, y2=1)
+    marker = BarBox(x1=10 / 423, y1=10 / 126, x2=58 / 423, y2=58 / 126)
+    hp_box = BarBox(x1=.3, x2=.95, y1=.55, y2=.75)
+    try:
+        dialog.configure_target(panel, ["Shopkeeper"], marker, hp_box)
+        profile = BarProfile(width=423, height=126, **dialog.target_config)
+        assert profile.target_kind_names == {"Shopkeeper": "npc"}
+        assert profile.dead_marker_visible(image)
+        restored = BarProfile.model_validate_json(profile.model_dump_json())
+        assert restored.target_panel == panel
+        assert restored.target_hp_presence_box == hp_box
+        assert restored.dead_marker_visible(image)
+        next_dialog = AutoReview(image, [], None, initial_profile=restored)
+        try:
+            assert next_dialog.target_config == dialog.target_config
+        finally:
+            next_dialog.close()
+        app.processEvents()
+    finally:
+        dialog.close()
+
+
+def test_selected_monster_panel_displays_name_hp_and_death(monkeypatch):
+    from test_healer import snapshot
+    from hid_pilot.target import TargetObservation
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    window = MainWindow()
+    try:
+        current = snapshot().model_copy(update={"selected_name": "Gremlin", "target":
+            TargetObservation(at=10., kind="monster", name="Gremlin", hp=0., dead=True, confidence=.99)})
+        window.show_observation({"state": current, "reason": "Наблюдение", "rates": {}})
+        text = window.party_state.toPlainText()
+        assert "Тип: монстр" in text and "Имя: Gremlin" in text
+        assert "HP цели: 0%" in text and "мёртвая" in text
+        target_section = text.split("=" * 60)[1]
+        assert "Класс:" not in target_section and "Клан:" not in target_section
+        app.processEvents()
+    finally:
+        window.close()
+
+
 def test_script_party_panel_duplicates_live_state_without_journal_messages(monkeypatch):
     from test_healer import snapshot
 
@@ -334,7 +385,7 @@ def test_combined_review_save_and_cancel_preserve_correct_profiles(monkeypatch, 
     dialog = Mock(boxes={"cp": box}, target_player_panel=box)
     dialog.exec.return_value = QDialog.DialogCode.Rejected
     dialog.party_profile.return_value = party
-    monkeypatch.setattr("hid_pilot.auto_review.AutoReview", lambda *args: dialog)
+    monkeypatch.setattr("hid_pilot.auto_review.AutoReview", lambda *args, **kwargs: dialog)
     window = MainWindow()
     window.path = tmp_path / "farm.pilot"
     payload = {"generation": window.auto_generation, "target": target, "path": window.path,

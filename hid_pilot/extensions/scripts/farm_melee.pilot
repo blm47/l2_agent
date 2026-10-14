@@ -1,0 +1,30 @@
+# Фарм мили-воином. Нужна прошивка HID_PILOT_V4 и английская раскладка.
+# Перед запуском настройте свои статы, HP цели и панель имени монстра.
+set next_target 6
+set attack 3
+set loot C
+set heal F2
+set rest =
+set humanize true
+set approach_delay 5
+set target_verify_seconds 2
+set quiet_seconds 3
+set loot_hold 1.5
+set search_moves 3
+# Списки клавиш через запятую; пустой список отключает дополнительные скиллы.
+# Пример: set damage_keys "F1,F2" и set overhit_keys "F3,F4".
+set damage_keys "3"
+set overhit_keys "2"
+set damage_interval 3
+set overhit_interval 5
+# Добивать при HP не выше 115% среднего обычного удара.
+set overhit_margin 1.15
+set hp_threshold 0.20
+# HP ниже 25%: проверить 3 секунды без урона и сесть; при уроне добить агрессора.
+set hp_rest_threshold 0.25
+set hp_resume 0.90
+set mp_threshold 0.10
+set mp_resume 0.90
+set max_seconds 360000
+set cycles 10000
+farm_melee "farm-bars.json"

@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 
 from hid_pilot.keyboard import KEYS, LEGACY_KEYS, V1_KEYS, V2_KEYS
@@ -20,6 +21,7 @@ class PicoTransport:
         self.sequence = 0
         self.failed = False
         self.last_heartbeat = 0.0
+        self.lock = threading.RLock()
         self.serial = serial.Serial(port, 115200, timeout=0.1, write_timeout=0.1)
         try:
             # Сбрасываем прошлую сессию даже при быстром переоткрытии COM-порта.
@@ -28,13 +30,17 @@ class PicoTransport:
             self.serial.dtr = True
             time.sleep(0.05)
             self.serial.reset_input_buffer()
-            self.protocol = self.command("HELLO", ("HID_PILOT_V3", "HID_PILOT_V2", "HID_PILOT_V1", "L2_PICO_V1"))
+            self.protocol = self.command("HELLO", ("HID_PILOT_V4", "HID_PILOT_V3", "HID_PILOT_V2", "HID_PILOT_V1", "L2_PICO_V1"))
         except Exception:
             self.serial.close()
             raise
         logger.info("Pico подключён: %s, протокол %s", port, self.protocol)
 
     def command(self, command: str, expected: str | tuple[str, ...]) -> str:
+        with self.lock:
+            return self._command(command, expected)
+
+    def _command(self, command: str, expected: str | tuple[str, ...]) -> str:
         if self.failed:
             raise OSError("Pico отключён после ошибки; перезапустите подключение")
         self.sequence += 1
@@ -42,12 +48,21 @@ class PicoTransport:
         try:
             if self.serial.write(payload) != len(payload):
                 raise OSError("Pico: неполная запись команды")
-            reply = self.serial.read_until(b"\n", 96)
+            # CDC может вернуть часть строки при timeout: дочитываем тот же ответ,
+            # не повторяя команду ввода и не принимая ответ другой sequence.
+            deadline = time.monotonic() + .25
+            reply = bytearray()
+            while len(reply) < 96 and time.monotonic() < deadline:
+                chunk = self.serial.read_until(b"\n", 96 - len(reply))
+                reply.extend(chunk)
+                if reply.endswith(b"\n"):
+                    break
+            reply = bytes(reply)
             choices = (expected,) if isinstance(expected, str) else expected
             for choice in choices:
                 if reply == f"{self.sequence} OK {choice}\n".encode("ascii"):
                     return choice
-            raise OSError(f"Pico: неверный ответ или timeout: {reply!r}")
+            raise OSError(f"Pico: команда {command}: неверный ответ или timeout: {reply!r}")
         except Exception:
             self.failed = True
             self.serial.close()
@@ -59,16 +74,25 @@ class PicoTransport:
         self.last_heartbeat = time.monotonic()
 
     def heartbeat(self) -> None:
-        if time.monotonic() - self.last_heartbeat >= 0.1:
+        started = time.monotonic()
+        if started - self.last_heartbeat >= 0.1:
             self.command("HB", "ALIVE")
-            self.last_heartbeat = time.monotonic()
+            self.last_heartbeat = started
 
     def hold(self, kind: str, name: str, duration_ms: int) -> None:
-        if kind not in ("KEY", "BUTTON"):
+        if kind not in ("KEY", "BUTTON", "CHORD"):
             raise ValueError("Неизвестный тип команды Pico")
+        if not 1 <= duration_ms <= (3000 if kind == "KEY" and self.protocol == "HID_PILOT_V4" else 1000):
+            raise ValueError("Недопустимая длительность удержания Pico")
+        if kind == "CHORD":
+            if self.protocol != "HID_PILOT_V4":
+                raise ValueError("Ввод в чат требует прошивки HID_PILOT_V4")
+            if name != "CTRL+A" and name not in {"SHIFT+" + key for key in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}:
+                raise ValueError("Сочетание клавиш запрещено")
         if kind == "KEY":
             supported = {"L2_PICO_V1": LEGACY_KEYS, "HID_PILOT_V1": V1_KEYS,
-                         "HID_PILOT_V2": V2_KEYS, "HID_PILOT_V3": KEYS}.get(self.protocol, ())
+                         "HID_PILOT_V2": V2_KEYS, "HID_PILOT_V3": KEYS,
+                         "HID_PILOT_V4": KEYS}.get(self.protocol, ())
             if name not in KEYS:
                 raise ValueError("Клавиша запрещена, включая hard-stop backslash")
             if name not in supported:

@@ -5,6 +5,8 @@
 import logging
 import re
 import threading
+import time
+from collections import OrderedDict
 from typing import Any
 
 import cv2
@@ -46,6 +48,7 @@ class NumbersReader:
     def __init__(self) -> None:
         self.engine: Any = None
         self.lock = threading.RLock()
+        self.cache: OrderedDict[tuple, tuple[float, ResourceNumbers]] = OrderedDict()
 
     def prepare(self) -> None:
         with self.lock:
@@ -67,8 +70,13 @@ class NumbersReader:
         if np.count_nonzero(foreground) < 4:
             return None
         mask = cv2.cvtColor(np.where(foreground, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        signature = (foreground.shape, foreground.tobytes())
         readings = []
         with self.lock:
+            cached = self.cache.get(signature)
+            if cached is not None and cached[1].current > 0 and 0 <= time.monotonic() - cached[0] <= 2:
+                self.cache.move_to_end(signature)
+                return cached[1]
             for crop in (mask, bgr):
                 resized = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
                 result, _ = self.engine(resized, use_det=False, use_cls=False)
@@ -79,7 +87,16 @@ class NumbersReader:
                         readings.append(parsed)
         if not readings or len({(r.current, r.maximum) for r in readings}) != 1:
             return None
-        return max(readings, key=lambda reading: reading.confidence)
+        result = max(readings, key=lambda reading: reading.confidence)
+        # Смерть должна подтверждаться новым OCR, а не повтором закешированного нуля.
+        if result.current == 0:
+            return result
+        with self.lock:
+            self.cache[signature] = time.monotonic(), result
+            self.cache.move_to_end(signature)
+            while len(self.cache) > 32:
+                self.cache.popitem(last=False)
+        return result
 
     def detect(self, bgr: np.ndarray) -> list[tuple[list[list[float]], str, float]]:
         self.prepare()

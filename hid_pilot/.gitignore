@@ -1,5 +1,6 @@
 healer-cooldowns.json
 healer-cooldowns.tmp
+monsters.sqlite3*
 .venv-build/
 firmware/vendor/*.uf2
 firmware/vendor/*.txt

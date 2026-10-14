@@ -15,6 +15,7 @@ from hid_pilot.bars import BarProfile, bar_fraction, text_mask
 from hid_pilot.desktop import Desktop, FocusLost
 from hid_pilot.healer import HealerSnapshot
 from hid_pilot.numbers import shared_numbers
+from hid_pilot.mob_statistics import MobStatistics
 from hid_pilot.paralysis import ParalysisDetector, ParalysisProfile
 from hid_pilot.party import PartyMember, PartyProfile
 from hid_pilot.player_target import PlayerIdentityReader
@@ -129,6 +130,7 @@ class HealerObserver:
         self.lock = threading.Lock()
         self.samples: deque[HealerSnapshot] = deque(maxlen=32)
         self.error: Exception | None = None
+        self.mob_statistics = MobStatistics(time.monotonic())
         self.worker = threading.Thread(target=self._run, name="HealerObserve", daemon=True)
         self.identity_image: np.ndarray | None = None
         self.identity_at = float("-inf")
@@ -148,10 +150,16 @@ class HealerObserver:
         while not self.stop_event.is_set():
             try:
                 with self.lock:
-                    image = self.identity_image
+                    image, at = self.identity_image, self.identity_at
                 if image is not None and not self.paused():
                     self.reader.auto_refresh(image)
-                    self.reader.identities.update(image)
+                    if 0 <= time.monotonic() - at <= 1:
+                        observation = self.reader.identities.update(image, at)
+                        now = time.monotonic()
+                        self.mob_statistics.observe(observation, now)
+                        self.mob_statistics.report(now)
+                else:
+                    self.mob_statistics.reset_target()
             except Exception:
                 logger.warning("Фоновый OCR временно недоступен; повтор через 0,5 сек", exc_info=True)
             self.stop_event.wait(.5)

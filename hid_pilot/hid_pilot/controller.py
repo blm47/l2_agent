@@ -348,11 +348,37 @@ class ActionController:
                 self.transport.release()
 
     def key(self, name: str, duration: int) -> None:
-        if name not in KEYS or not 1 <= duration <= 1000:
+        if name not in KEYS or not 1 <= duration <= (3000 if self.transport.protocol == "HID_PILOT_V4" else 1000):
             raise ValueError("Недопустимая клавиша или длительность")
         if self.humanize and duration <= 200:
             duration = random.randint(max(1, round(duration * .7)), round(duration * 1.3))
         self._hold("KEY", name, duration)
+
+    def target_by_name(self, name: str) -> None:
+        """
+        Выбирает цель через чат; требуется английская раскладка игры.
+        """
+        if self.transport.protocol != "HID_PILOT_V4":
+            raise ValueError("Выбор через чат требует прошивки HID_PILOT_V4")
+        if not name or len(name) > 80 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '-" for char in name):
+            raise ValueError("Имя цели содержит неподдерживаемые символы")
+        self.key("ENTER", 80)
+        self.wait(.15)
+        self._hold("CHORD", "CTRL+A", 80)
+        self.key("BACKSPACE", 80)
+        for char in "/target " + name:
+            if char.isupper():
+                self._hold("CHORD", "SHIFT+" + char, 50)
+            else:
+                self.key({" ": "SPACE", "'": "APOSTROPHE"}.get(char, char.upper()), 50)
+        self.key("ENTER", 80)
+        self.wait(.15)
+        current = self.desktop.cursor()
+        left, top, right, bottom = self.desktop.target.rect
+        if left <= current[0] < right and top <= current[1] < bottom:
+            self.click_current("right")
+        else:
+            self.click("right", .5, .5)
 
     def click(self, button: str, x: float, y: float,
               verify: Callable[[], None] | None = None) -> None:

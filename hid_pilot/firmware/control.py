@@ -72,7 +72,7 @@ class Control:
             args = fields[2:]
             if name == "HELLO" and not args:
                 self.disarm()
-                result = "HID_PILOT_V3"
+                result = "HID_PILOT_V4"
             elif name == "STOP" and not args:
                 self.disarm()
                 result = "STOPPED"
@@ -95,11 +95,20 @@ class Control:
                     raise ValueError("MOVE")
                 self.mouse.send_report(bytes((0, dx & 255, dy & 255, 0)))
                 result = "MOVED"
-            elif name in ("KEY", "BUTTON") and len(args) == 2 and self.armed:
+            elif name in ("KEY", "BUTTON", "CHORD") and len(args) == 2 and self.armed:
                 duration = int(args[1])
-                if not 1 <= duration <= 1000 or self.active:
+                limit = 3000 if name == "KEY" else 1000
+                if not 1 <= duration <= limit or self.active:
                     raise ValueError("HOLD")
-                if name == "KEY":
+                if name == "CHORD":
+                    # Разрешены только очистка чата и Shift для печати символов.
+                    modifier, key = args[0].split("+")
+                    if not (modifier == "CTRL" and key == "A" or
+                            modifier == "SHIFT" and key in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+                        raise ValueError("CHORD")
+                    report = bytes((1 if modifier == "CTRL" else 2, 0, KEYS[key], 0, 0, 0, 0, 0))
+                    device = self.keyboard
+                elif name == "KEY":
                     usage = KEYS[args[0]]
                     # Модификатор занимает бит первого байта, а не слот обычной клавиши.
                     modifier = 1 << (usage - 224) if usage >= 224 else 0

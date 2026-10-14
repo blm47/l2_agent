@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hid_pilot.party import PartyMember
+from hid_pilot.target import TargetObservation
 from hid_pilot.script import KEYS
 
 Skill = Literal["balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2", "self_rescue", "area_heal"]
@@ -158,6 +159,7 @@ class HealerSnapshot(BaseModel):
     selected_class: str | None = None
     selected_clan: str | None = None
     selected_confidence: float = Field(default=0, ge=0, le=1)
+    target: TargetObservation | None = None
 
     def follows_selected(self, target: str) -> bool:
         matches = [member for member in self.members if member.target_id == target]

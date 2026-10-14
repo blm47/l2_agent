@@ -11,10 +11,35 @@ board_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(board_module)
 
 
+def test_chat_chord_usb_report_and_watchdog_release():
+    keyboard, mouse = Mock(), Mock()
+    now = [0.]
+    board = board_module.Control(keyboard, mouse, lambda: now[0])
+    board.command(b"1 ARM")
+    assert board.command(b"2 CHORD CTRL+A 80") == b"2 OK SENT\n"
+    keyboard.send_report.assert_called_with(bytes((1, 0, 4, 0, 0, 0, 0, 0)))
+    now[0] = .08
+    board.tick(True)
+    keyboard.send_report.assert_called_with(bytes(8))
+    assert board.command(b"3 KEY W 3000") == b"3 OK SENT\n"
+    now[0] = .36
+    board.tick(True)
+    assert not board.armed
+    keyboard.send_report.assert_called_with(bytes(8))
+
+
+@pytest.mark.parametrize("chord", [b"ALT+TAB", b"CTRL+ESC", b"WIN+R", b"SHIFT+ENTER"])
+def test_firmware_rejects_os_chords(chord):
+    board = board_module.Control(Mock(), Mock(), lambda: 0.)
+    board.command(b"1 ARM")
+    assert b"ERR" in board.command(b"2 CHORD " + chord + b" 80")
+    assert not board.armed
+
+
 def test_hid_move_and_heartbeat_timeout():
     keyboard, mouse, clock = Mock(), Mock(), Mock(return_value=1.0)
     board = board_module.Control(keyboard, mouse, clock)
-    assert board.command(b"1 HELLO") == b"1 OK HID_PILOT_V3\n"
+    assert board.command(b"1 HELLO") == b"1 OK HID_PILOT_V4\n"
     assert board.command(b"2 MOVE 1 1") == b"2 ERR REJECTED\n"
     board.command(b"3 ARM")
     assert board.command(b"4 MOVE -8 7") == b"4 OK MOVED\n"
@@ -46,7 +71,7 @@ def test_controller_navigation_is_accepted_by_firmware(destination):
         result = board.command(f"{sequence[0]} {text}".encode())
         assert result == f"{sequence[0]} OK {expected}\n".encode()
 
-    transport = Mock(protocol="HID_PILOT_V3")
+    transport = Mock(protocol="HID_PILOT_V4")
     transport.command.side_effect = command
     transport.release.side_effect = lambda: command("RELEASE", "RELEASED")
     command("ARM", "ARMED")
@@ -61,7 +86,7 @@ def test_controller_navigation_is_accepted_by_firmware(destination):
 
 
 @pytest.mark.parametrize("command", [b"MOVE 17 0", b"MOVE 0 -17", b"KEY ALT+TAB 10",
-                                     b"KEY R 1001", b"BUTTON middle 10"])
+                                     b"KEY R 3001", b"BUTTON middle 10"])
 def test_invalid_input_disarms(command):
     board = board_module.Control(Mock(), Mock(), lambda: 1.0)
     board.command(b"1 ARM")

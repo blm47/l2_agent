@@ -27,6 +27,16 @@ def test_conflicting_preprocessing_is_unknown():
     assert reader.read(image) is None
 
 
+def test_zero_hp_is_confirmed_by_independent_ocr_instead_of_cache():
+    reader = NumbersReader()
+    reader.engine = Mock(side_effect=[([["0/100", .99]], None), ([["0/100", .99]], None),
+                                      ([["20/100", .99]], None), ([["20/100", .99]], None)])
+    image = np.full((20, 80, 3), 200, dtype=np.uint8)
+    assert reader.read(image).fraction == 0
+    assert reader.read(image).fraction == .2
+    assert reader.engine.call_count == 4
+
+
 def test_ocr_zero_precedes_color_and_unknown_can_fall_back(monkeypatch):
     reader = Mock()
     reader.read.return_value = parse_numbers("0/58", .99)

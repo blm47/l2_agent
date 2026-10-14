@@ -20,6 +20,18 @@
       "config": "hid_pilot.farm:FarmConfig",
       "prepare": "hid_pilot.farm:prepare_extension",
       "run": "hid_pilot.farm:run_extension"
+    },
+    "farm_melee": {
+      "arguments": 1,
+      "config": "hid_pilot.farm_melee:MeleeConfig",
+      "prepare": "hid_pilot.farm_melee:prepare_extension",
+      "run": "hid_pilot.farm_melee:run_extension"
+    },
+    "target_name": {
+      "arguments": 1,
+      "config": "hid_pilot.chat_target:ChatTargetConfig",
+      "prepare": "hid_pilot.chat_target:prepare_extension",
+      "run": "hid_pilot.chat_target:run_extension"
     }
   }
 }
