@@ -17,6 +17,7 @@ from hid_pilot.healer import HealDecision, HealerConfig, HealerSnapshot, HealPol
 from hid_pilot.healer_log import format_state
 from hid_pilot.healer_observer import HealerObserver, HealerReader
 from hid_pilot.party import PartyProfile
+from hid_pilot.resurrection import wait_for_resurrection
 from hid_pilot.skill_aura import SkillAura
 
 logger = logging.getLogger("hid_pilot.healer")
@@ -42,12 +43,13 @@ class TargetChanged(Exception):
 class Healer:
     def __init__(self, controller: ActionController, own: BarProfile, party: PartyProfile,
                  config: HealerConfig, notify: Callable[[str], None], state_path: Path) -> None:
-        if controller.transport.protocol not in {"HID_PILOT_V2", "HID_PILOT_V3"}:
+        if controller.transport.protocol not in {"HID_PILOT_V2", "HID_PILOT_V3", "HID_PILOT_V4"}:
             raise ValueError("Хилер требует HID_PILOT_V2 (NUM7 и -); игровой ввод не начат")
         self.controller = controller
         self.own = own
         self.party = party
         self.config = config
+        self.next_random_move = time.monotonic() + random.uniform(30, 60)
         self.notify = notify
         self.state_path = state_path
         self.policy = HealPolicy(config, time.monotonic())
@@ -70,6 +72,19 @@ class Healer:
         logger.info(message)
         self.notify(message)
 
+    def await_resurrection(self, deadline: float) -> None:
+        self.approach_until = None
+        self.active_cast = None
+        self.aura.on = False
+        wait_for_resurrection(self.controller, self.own, deadline, self.notify)
+        previous = self.policy
+        self.policy = type(previous)(self.config, time.monotonic())
+        self.policy.ready_at = previous.ready_at
+        self.policy.humanize = previous.humanize
+        self.policy.chain_heals = previous.chain_heals
+        self.loot = AutoLoot(time.monotonic())
+        self.next_random_move = time.monotonic() + random.uniform(30, 60)
+
     def restore_timers(self) -> None:
         if not self.state_path.exists():
             return
@@ -78,13 +93,15 @@ class Healer:
             raise ValueError("Файл откатов относится к другому персонажу; нужен отдельный сценарий/папка")
         now, wall = time.monotonic(), time.time()
         for skill, expiry in data["ready_at"].items():
-            if skill not in {"balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2", "self_rescue", "area_heal"}:
+            if skill == "area_heal":
+                skill = "circlet_of_heal"
+            if skill not in {"balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2", "self_rescue", "circlet_of_heal"}:
                 raise ValueError("Неизвестный скилл в файле откатов")
             remaining = float(expiry) - wall
             limit = 3605 if skill in {"mp_buff", "mp_buff2"} else 3600
             if not -86400 * 365 <= remaining <= limit:
                 raise ValueError("Некорректный таймер отката")
-            self.policy.ready_at[skill] = now + max(0, remaining)
+            self.policy.ready_at[skill] = max(self.policy.ready_at.get(skill, 0), now + max(0, remaining))
         remaining = float(data.get("busy_until", 0)) - wall
         if not math.isfinite(remaining) or remaining > 135:
             raise ValueError("Некорректный таймер каста")
@@ -331,7 +348,7 @@ class Healer:
                                                     + self.config.group_buff_seconds)
             if self.config.aura_enabled:
                 self.aura.after(time.monotonic() + self.config.cast_seconds(decision.skill))
-            if decision.skill in {"battle", "major", "group", "mass_major", "avatar", "balance", "purify", "self_rescue", "area_heal"}:
+            if decision.skill in {"battle", "major", "group", "mass_major", "avatar", "balance", "purify", "self_rescue", "circlet_of_heal"}:
                 ambiguous = self.active_cast is not None and self.active_cast[1] > time.monotonic()
                 self.active_cast = decision, time.monotonic() + self.config.cast_seconds(decision.skill), ambiguous
                 self.cast_revision = current.profile_revision
@@ -348,9 +365,37 @@ class Healer:
         self.report(f"Хилер: {decision.kind} {decision.skill or ''} "
                     f"{decision.target or ''} — {decision.reason}")
 
+    def try_random_movement(self, deadline: float) -> bool:
+        now = time.monotonic()
+        if not self.config.random_movement or now < self.next_random_move:
+            return False
+        if now < self.policy.busy_until or (self.active_cast is not None and now < self.active_cast[1]):
+            return False
+        generation = self.controller.pause_generation
+        state = self.latest()
+        decision = self.policy.decide(state, now)
+        if (decision.kind not in {"wait", "follow"} or not state.roster_known
+                or state.mp is None or state.mp < self.config.low_mp
+                or state.hp is None or state.hp < self.config.heal_hp
+                or any(m.hp is None or m.hp < self.config.heal_hp or m.mp is None for m in state.members)
+                or generation != self.controller.pause_generation):
+            return False
+        duration = random.randint(300, 3000 if self.controller.transport.protocol == "HID_PILOT_V4" else 1000)
+        if time.monotonic() + duration / 1000 + .02 > deadline:
+            return False
+        key = random.choice(("W", "A", "S", "D"))
+        self.controller.key(key, duration)
+        self.next_random_move = time.monotonic() + random.uniform(30, 60)
+        self.policy.follow_needed = True
+        self.policy.next_follow_at = time.monotonic()
+        self.approach_until = None
+        self.report(f"Случайное движение: {key}, {duration} мс")
+        return True
+
     def run(self, deadline: float | None = None) -> None:
         deadline = min(time.monotonic() + self.config.max_seconds,
                        deadline if deadline is not None else float("inf"))
+        self.run_deadline = deadline
         unknown_since = time.monotonic()
         generation = self.controller.pause_generation
         next_log = 0.
@@ -368,8 +413,11 @@ class Healer:
                     self.policy.hp_missing_since.clear()
                     self.loot = AutoLoot(time.monotonic())
                     self.active_cast = None
+                    self.next_random_move = time.monotonic() + random.uniform(30, 60)
                 states = self.observer.snapshots()
-                if self.guard_approach(states[-1] if states else None):
+                death_observed = bool(states and 0 <= time.monotonic() - states[-1].at <= 1
+                                      and states[-1].hp == 0)
+                if not death_observed and self.guard_approach(states[-1] if states else None):
                     continue
                 now = time.monotonic()
                 if not states or now - states[-1].at > 1:
@@ -389,6 +437,10 @@ class Healer:
                         self.controller.wait(self.config.poll_seconds)
                         continue
                 state = self.policy.monitored_state(states[-1])
+                if state.hp == 0:
+                    self.await_resurrection(deadline)
+                    self.controller.wait(self.config.poll_seconds)
+                    continue
                 if self.config.aura_enabled and state.hp is not None and state.hp > 0 and state.mp is not None:
                     self.aura.tick(time.monotonic())
                 self.cancel_cast_if_unneeded(state, now)
@@ -412,6 +464,12 @@ class Healer:
                     if logger.isEnabledFor(logging.DEBUG):
                         self.notify(text)
                     next_log = now + 2
+                if decision.kind in {"wait", "follow"}:
+                    try:
+                        if self.try_random_movement(deadline):
+                            continue
+                    except TargetChanged:
+                        continue
                 if decision.kind not in {"wait", "stop"}:
                     self.loot.interrupt(now)
                     try:

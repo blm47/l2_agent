@@ -14,6 +14,10 @@ class FocusLost(RuntimeError):
     pass
 
 
+class ActivationDenied(RuntimeError):
+    pass
+
+
 class Target(BaseModel):
     model_config = ConfigDict(frozen=True)
     hwnd: int
@@ -26,8 +30,18 @@ def activate(target: Target) -> Target:
     current = snapshot(target.hwnd)
     if current.pid != target.pid:
         raise RuntimeError("Выбранное окно сменило процесс")
-    # Запрос от START или настройки областей; watchdog фокус не перехватывает.
-    win32gui.SetForegroundWindow(target.hwnd)
+    if win32gui.GetForegroundWindow() == target.hwnd:
+        return current
+    # Запрос от START, настройки или штатного переключения; watchdog фокус не перехватывает.
+    try:
+        win32gui.SetForegroundWindow(target.hwnd)
+    except pywintypes.error as exc:
+        # Win32 может вернуть ошибку с кодом 0 даже при уже полученном фокусе.
+        if win32gui.GetForegroundWindow() != target.hwnd:
+            raise ActivationDenied(
+                f"Windows отклонила активацию окна «{target.title}» [PID {target.pid}]; "
+                f"код {exc.winerror}"
+            ) from exc
     # Windows может завершить переключение позже. Capture и ввод проверяют
     # фокус после предусмотренной вызывающим кодом задержки.
     return current

@@ -2,6 +2,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QFont, QImage, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -121,6 +122,7 @@ class AutoReview(QDialog):
         self.choices: dict[str, QComboBox] = {}
         self.target_player_panel: BarBox | None = initial_profile.target_player_panel if initial_profile else None
         self.target_config: dict = {}
+        self.system_chat = initial_profile.system_chat if initial_profile else None
         self.level_boxes = {key: getattr(initial_profile, key) if initial_profile else None
                             for key in ("own_level", "target_level")}
         if initial_profile is not None:
@@ -156,6 +158,14 @@ class AutoReview(QDialog):
         levels = QPushButton("Настроить уровень монстра / персонажа…")
         levels.clicked.connect(lambda: self.edit_own_regions("target_level"))
         form.addRow(levels)
+        self.chat_enabled = QCheckBox("Читать системный чат через OCR (опционально)")
+        self.chat_enabled.setChecked(False)
+        self.chat_enabled.setEnabled(False)
+        self.chat_enabled.setToolTip("Распознавание системного чата временно отключено по запросу пользователя")
+        form.addRow(self.chat_enabled)
+        chat = QPushButton("Системный чат: вручную выделить область сообщений…")
+        chat.clicked.connect(lambda: self.edit_own_regions("system_chat"))
+        form.addRow(chat)
         self.party_choice = QComboBox()
         self.party_choice.addItem("Не найдено / не использовать", None)
         for candidate in party_candidates or []:
@@ -211,6 +221,7 @@ class AutoReview(QDialog):
             mode.addItem(label, name)
         mode.addItem("Мой уровень (цифры слева от статов)", "own_level")
         mode.addItem("Уровень цели (цифры слева от HP)", "target_level")
+        mode.addItem("Системный чат: только сообщения, без вкладок и поля ввода", "system_chat")
         mode.addItem("Имя цели над HP (общая область игрока / монстра / NPC)", "target_panel")
         index = mode.findData(initial_mode) if isinstance(initial_mode, str) else -1
         if index >= 0:
@@ -218,6 +229,8 @@ class AutoReview(QDialog):
         layout.addWidget(mode)
         canvas = ReviewCanvas(self.source_image)
         selected = self.boxes.copy()
+        if self.system_chat is not None:
+            selected["system_chat"] = self.system_chat
         selected.update({key: value for key, value in self.level_boxes.items() if value is not None})
         panel = self.target_config.get("target_panel")
         if panel is not None:
@@ -237,6 +250,9 @@ class AutoReview(QDialog):
         layout.addWidget(buttons)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             for name, box in selected.items():
+                if name == "system_chat":
+                    self.system_chat = box
+                    continue
                 if name == "target_panel":
                     self.target_player_panel = box
                     self.target_config["target_panel"] = box.model_dump()
@@ -263,6 +279,8 @@ class AutoReview(QDialog):
         if "target_hp" in self.boxes:
             self.target_config["target_hp_presence_box"] = self.boxes["target_hp"].model_dump()
         self.canvas.boxes = self.boxes.copy()
+        if self.system_chat is not None:
+            self.canvas.boxes["Системный чат"] = self.system_chat
         self.canvas.boxes.update({key: value for key, value in self.level_boxes.items() if value is not None})
         if self.target_player_panel is not None:
             self.canvas.boxes["Игрок: ник / класс / клан"] = self.target_player_panel
@@ -410,6 +428,9 @@ class AutoReview(QDialog):
             self.party_choice.setCurrentIndex(self.party_choice.count() - 1)
 
     def save(self) -> None:
+        if self.chat_enabled.isChecked() and self.system_chat is None:
+            self.party_error.setText("Для OCR системного чата выделите область сообщений")
+            return
         try:
             self.party_profile()
         except ValueError as exc:

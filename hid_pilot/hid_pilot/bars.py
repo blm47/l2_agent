@@ -27,6 +27,8 @@ class BarBox(BaseModel):
 
 
 class BarProfile(BaseModel):
+    system_chat: BarBox | None = None
+    system_chat_enabled: bool = False
     model_config = ConfigDict(extra="forbid")
     width: int = Field(ge=20)
     height: int = Field(ge=20)

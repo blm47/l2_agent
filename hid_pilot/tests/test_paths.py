@@ -21,7 +21,12 @@ def test_user_scripts_are_writable_and_existing_changes_are_preserved(monkeypatc
     example.write_text("wait 10", "utf-8")
     assert example_scripts_dir() == destination
     assert example.read_text("utf-8") == "wait 10"
-    assert not list(destination.glob("*.json"))
+    assert all(path.name.endswith(".duo.json") for path in destination.glob("*.json"))
+    duo = destination / "farmer-healer.duo.pilot"
+    assert duo.exists()
+    duo.write_text('set heal_threshold 0.75\n', encoding="utf-8")
+    example_scripts_dir()
+    assert duo.read_text("utf-8") == 'set heal_threshold 0.75\n'
 
 
 def test_scripts_are_not_extracted_from_exe_bundle(monkeypatch, tmp_path):

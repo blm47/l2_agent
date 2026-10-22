@@ -28,7 +28,7 @@ set progress_epsilon 0.002
 set rest_timeout 120
 set heal_attempts 5
 set cycles 1000
-set max_seconds 36000
+set max_hours 3
 
 # Перед запуском выполните общий автопоиск HP/MP/CP, цели и пати.
 # Проверьте найденные области и сохраните результат.

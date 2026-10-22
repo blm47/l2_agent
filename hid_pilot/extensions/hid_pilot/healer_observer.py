@@ -20,6 +20,8 @@ from hid_pilot.paralysis import ParalysisDetector, ParalysisProfile
 from hid_pilot.party import PartyMember, PartyProfile
 from hid_pilot.player_target import PlayerIdentityReader
 from hid_pilot.session_perception import SessionPerception
+from hid_pilot.system_chat import SystemChatOCR
+from hid_pilot.party_class import PartyClassDetector
 
 logger = logging.getLogger("hid_pilot.healer.observer")
 
@@ -39,6 +41,7 @@ class HealerReader:
         self.recovery = SessionPerception(own, party)
         self.resources: dict[str, tuple[bytes, float | None]] = {}
         self.identities = PlayerIdentityReader(own, party)
+        self.class_detector = PartyClassDetector(party)
         reference = Path(__file__).resolve().parents[1] / "assets" / "destroyer.png"
         self.destroyer = ParalysisDetector(ParalysisProfile(width=party.width, height=party.height,
                                                          template=str(reference)), party)
@@ -86,7 +89,20 @@ class HealerReader:
             return
         with self.profile_lock:
             if party is not None:
+                if self.party.class_icon is not None:
+                    icon = self.party.class_icon
+                    dx, dy = party.cp.x1 - self.party.cp.x1, party.cp.y1 - self.party.cp.y1
+                    try:
+                        from hid_pilot.bars import BarBox
+
+                        shifted = BarBox(x1=icon.x1 + dx, x2=icon.x2 + dx,
+                                         y1=icon.y1 + dy, y2=icon.y2 + dy)
+                        party = PartyProfile.model_validate(party.model_dump() | {
+                            "class_icon": shifted.model_dump(), "class_templates": self.party.class_templates})
+                    except ValueError:
+                        logger.warning("Авторазметка не сохранила иконки класса: проверьте ручную область")
                 self.party = party
+                self.class_detector = PartyClassDetector(party)
                 self.identities.party = party
                 self.destroyer.party = party
                 if hasattr(self, "detector"):
@@ -111,6 +127,7 @@ class HealerReader:
                 known = False
             members.append(PartyMember(slot=slot, **values))
         members, selected = self.identities.apply(image, members, at)
+        members = self.class_detector.apply(image, members, at)
         destroyer_slots = self.destroyer.read(image, tuple(member.slot for member in members))
         return HealerSnapshot(at=at, hp=self.buffered_resource(image, "hp", at), mp=self.buffered_resource(image, "mp", at),
                               cp=self.buffered_resource(image, "cp", at), members=tuple(members), roster_known=known,
@@ -136,6 +153,8 @@ class HealerObserver:
         self.identity_at = float("-inf")
         self.identity_worker = threading.Thread(target=self._identity_loop, name="PlayerTargetOCR", daemon=True)
         self.own_worker = threading.Thread(target=self._own_loop, name="HealerOwnOCR", daemon=True)
+        self.chat = SystemChatOCR(reader.own, shared_numbers())
+        self.chat_revision = reader.revision
 
     def start(self) -> None:
         shared_numbers().prepare()
@@ -154,11 +173,18 @@ class HealerObserver:
                 if image is not None and not self.paused():
                     self.reader.auto_refresh(image)
                     if 0 <= time.monotonic() - at <= 1:
+                        with self.reader.profile_lock:
+                            if self.chat_revision != self.reader.revision:
+                                self.chat.reset_chat()
+                                self.chat_revision = self.reader.revision
+                            self.chat.profile = self.reader.own
+                        self.chat.read_chat(image, at)
                         observation = self.reader.identities.update(image, at)
                         now = time.monotonic()
                         self.mob_statistics.observe(observation, now)
                         self.mob_statistics.report(now)
                 else:
+                    self.chat.reset_chat()
                     self.mob_statistics.reset_target()
             except Exception:
                 logger.warning("Фоновый OCR временно недоступен; повтор через 0,5 сек", exc_info=True)
@@ -212,6 +238,7 @@ class HealerObserver:
             return tuple(self.samples)
 
     def close(self) -> None:
+        self.chat.close()
         self.stop_event.set()
         if self.worker.is_alive():
             self.worker.join(timeout=3)

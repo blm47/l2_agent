@@ -23,6 +23,8 @@ from hid_pilot.auto_party import find_party
 from hid_pilot.auto_review import ReviewCanvas
 from hid_pilot.bars import BarBox
 from hid_pilot.party import PartyProfile
+from hid_pilot.party_class import icon_pixels
+from hid_pilot.bars import BarProfile
 
 FIELDS = {"name": "Имя первого участника", "cp": "CP первого участника",
           "hp": "HP первого участника", "mp": "MP первого участника"}
@@ -37,6 +39,8 @@ class PartyReview(QDialog):
         self.resize(1200, 900)
         self.image = image
         self.regions: dict[str, BarBox] = {}
+        self.class_icon: BarBox | None = None
+        self.class_templates: dict[str, list[list[int]]] = {}
         layout = QVBoxLayout(self)
         hint = QLabel(
             "Выделите мышью ВСЮ панель пати: от первого имени до MP последнего участника. "
@@ -55,7 +59,18 @@ class PartyReview(QDialog):
         self.field.addItem("CP первого участника (перенести всю разметку)", "anchor")
         for key, title in FIELDS.items():
             self.field.addItem(title, key)
+        self.field.addItem("Иконка класса первого участника (весь значок)", "class_icon")
+        self.field.addItem("Эталон класса: выделить значок любого участника", "class_reference")
         form.addRow("Выделяем мышью", self.field)
+        self.reference_class = QComboBox()
+        self.reference_class.addItems(["Elven Elder", "Shilien Elder"])
+        form.addRow("Класс выделяемого эталона", self.reference_class)
+        self.class_status = QLabel("Эталоны классов не заданы; распознавание выключено")
+        self.class_status.setWordWrap(True)
+        form.addRow(self.class_status)
+        clear_class = QPushButton("Удалить эталон выбранного класса")
+        clear_class.clicked.connect(self.clear_class_reference)
+        form.addRow(clear_class)
         self.step = QSpinBox()
         self.step.setRange(20, 500)
         self.step.setValue(70)
@@ -100,6 +115,9 @@ class PartyReview(QDialog):
             self.update_preview()
 
     def load_profile(self, profile: PartyProfile) -> None:
+        self.class_icon = profile.class_icon
+        self.class_templates = {name: [row.copy() for row in pixels]
+                                for name, pixels in profile.class_templates.items()}
         self.regions = {kind: getattr(profile, kind) for kind in FIELDS}
         offsets = profile.row_offsets or [i * profile.row_step for i in range(8)]
         step = min(500, min(b - a for a, b in pairwise(offsets)))
@@ -116,10 +134,25 @@ class PartyReview(QDialog):
             offsets.append(offsets[-1] + self.step.value() + spin.value())
         height, width = self.image.shape[:2]
         return PartyProfile(width=width, height=height, **self.regions,
-                            row_step=self.step.value(), row_offsets=offsets)
+                            row_step=self.step.value(), row_offsets=offsets,
+                            class_icon=self.class_icon, class_templates=self.class_templates)
 
     def select_region(self, box: BarBox) -> None:
         key = self.field.currentData()
+        if key == "class_icon":
+            self.class_icon = box
+            self.update_preview()
+            return
+        if key == "class_reference":
+            height, width = self.image.shape[:2]
+            try:
+                crop = BarProfile(width=width, height=height).crop(self.image, box)
+                self.class_templates[self.reference_class.currentText()] = icon_pixels(crop)
+            except ValueError as exc:
+                self.status.setText(str(exc))
+                return
+            self.update_preview()
+            return
         if key == "panel":
             candidates = find_party(self.image, None, box)
             if len(candidates) != 1:
@@ -143,6 +176,14 @@ class PartyReview(QDialog):
                     self.status.setText("Перенос выводит области за границы окна; уточните выделение.")
                     return
                 shifted["cp"] = box
+                if self.class_icon is not None:
+                    icon = self.class_icon
+                    try:
+                        self.class_icon = BarBox(x1=icon.x1 + dx, x2=icon.x2 + dx,
+                                                 y1=icon.y1 + dy, y2=icon.y2 + dy)
+                    except ValueError:
+                        self.status.setText("Перенос иконки выходит за границы окна")
+                        return
                 self.regions = shifted
                 self.update_preview()
                 return
@@ -153,14 +194,23 @@ class PartyReview(QDialog):
         if not hasattr(self, "canvas"):
             return
         self.canvas.boxes = {FIELDS[key]: box for key, box in self.regions.items()}
+        self.class_status.setText("Эталоны: " + ", ".join(self.class_templates) if self.class_templates
+                                  else "Эталоны классов не заданы; распознавание выключено")
         try:
             profile = self.profile()
             self.canvas.boxes = {f"{slot + 1}: {kind}": profile.box(kind, slot)
                                  for slot in range(8) for kind in FIELDS}
+            if profile.class_icon is not None:
+                self.canvas.boxes.update({f"{slot + 1}: класс": profile.box("class_icon", slot)
+                                          for slot in range(8)})
             self.status.setText("Рамки 1–8 идут сверху вниз; питомцы должны оставаться между строками.")
         except ValueError as exc:
             self.status.setText(str(exc))
         self.canvas.update()
+
+    def clear_class_reference(self) -> None:
+        self.class_templates.pop(self.reference_class.currentText(), None)
+        self.update_preview()
 
     def show_full(self) -> None:
         self.canvas.view_box = BarBox(x1=0, y1=0, x2=1, y2=1)
@@ -172,6 +222,8 @@ class PartyReview(QDialog):
         except ValueError:
             return
         boxes = [profile.box(kind, slot) for slot in range(8) for kind in FIELDS]
+        if profile.class_icon is not None:
+            boxes.extend(profile.box("class_icon", slot) for slot in range(8))
         self.canvas.view_box = BarBox(
             x1=max(0, min(b.x1 for b in boxes) - .02),
             x2=min(1, max(b.x2 for b in boxes) + .02),

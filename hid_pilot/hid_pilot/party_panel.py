@@ -24,6 +24,7 @@ from hid_pilot.mob_statistics import MobStatistics
 from hid_pilot.numbers import shared_numbers
 from hid_pilot.party import PartyProfile, read_party
 from hid_pilot.party_statistics import format_statistics
+from hid_pilot.party_class import PartyClassDetector
 from hid_pilot.target import TargetReader
 
 logger = logging.getLogger("hid_pilot.party")
@@ -47,6 +48,7 @@ class PartyPanel(QWidget):
         self.generation = 0
         self.last_result = 0.
         self.target_reader: TargetReader | None = None
+        self.class_detector: PartyClassDetector | None = None
         self.mob_statistics = MobStatistics(time.monotonic())
         layout = QVBoxLayout(self)
         setup = QPushButton("Автопоиск HP / MP / CP / цели / пати…")
@@ -61,7 +63,7 @@ class PartyPanel(QWidget):
         self.enabled = QCheckBox("Наблюдать пати (OCR имён, CP/HP/MP по полосам)")
         self.enabled.toggled.connect(self.reset)
         layout.addWidget(self.enabled)
-        self.status = QLabel("Сохраните сценарий, выполните общий автопоиск и включите наблюдение")
+        self.status = QLabel(format_statistics({}, {}, [], {}, "Сохраните сценарий, выполните общий автопоиск и включите наблюдение"))
         self.status.setWordWrap(True)
         self.status.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
         layout.addWidget(self.status)
@@ -75,9 +77,14 @@ class PartyPanel(QWidget):
         self.generation += 1
         self.last_result = 0
         self.target_reader = None
+        self.class_detector = None
         self.mob_statistics = MobStatistics(time.monotonic())
-        self.status.setText("Ожидание свежего кадра" if self.enabled.isChecked() else "Наблюдение выключено")
-        self.updated.emit(self.status.text())
+        self.show_unavailable("Ожидание свежего кадра" if self.enabled.isChecked() else "Наблюдение выключено")
+
+    def show_unavailable(self, reason: str) -> None:
+        text = format_statistics({}, {}, [], {}, reason)
+        self.status.setText(text)
+        self.updated.emit(text)
 
     def profile_path(self) -> Path:
         path = self.path()
@@ -89,7 +96,7 @@ class PartyPanel(QWidget):
         if not self.enabled.isChecked() or self.running():
             return
         if time.monotonic() - self.last_result > 3:
-            self.status.setText("Пати: нет свежего наблюдения")
+            self.show_unavailable("Пати: нет свежего наблюдения")
         if self.busy:
             return
         try:
@@ -102,7 +109,7 @@ class PartyPanel(QWidget):
             Desktop(target).check()
         except Exception as exc:
             logger.debug("Пати недоступна", exc_info=True)
-            self.status.setText(f"Пати: неизвестно — {exc}")
+            self.show_unavailable(f"Пати: неизвестно — {exc}")
             return
         self.busy = True
         generation = self.generation
@@ -128,13 +135,17 @@ class PartyPanel(QWidget):
                     own_values = {name: own.read(image, name) if name in own.bars.keys() | own.numbers.keys() else None
                                   for name in ("hp", "mp", "cp")}
                     own_values["level"] = own.read_level(image, "own_level")
-                payload["text"] = format_statistics(own_values, selected,
-                                                    read_party(image, profile, shared_numbers()) if profile else [],
+                members = read_party(image, profile, shared_numbers()) if profile else []
+                if profile is not None:
+                    if self.class_detector is None or self.class_detector.profile != profile:
+                        self.class_detector = PartyClassDetector(profile)
+                    members = self.class_detector.apply(image, members, payload["started"])
+                payload["text"] = format_statistics(own_values, selected, members,
                                                     {}, "Наблюдение пати")
                 desktop.check()
             except Exception as exc:
                 logger.debug("Наблюдение пати недоступно", exc_info=True)
-                payload["text"] = f"Пати: неизвестно — {exc}"
+                payload["text"] = format_statistics({}, {}, [], {}, f"Пати: неизвестно — {exc}")
             self.result.emit(payload)
 
         self.worker = threading.Thread(target=work, name="PartyOCR", daemon=True)
@@ -148,7 +159,7 @@ class PartyPanel(QWidget):
             self.reset()
             return
         if time.monotonic() - payload["started"] > 3:
-            self.status.setText("Пати: OCR устарел, ожидается следующий кадр")
+            self.show_unavailable("Пати: OCR устарел, ожидается следующий кадр")
             return
         self.last_result = payload["started"]
         if "observation" in payload:

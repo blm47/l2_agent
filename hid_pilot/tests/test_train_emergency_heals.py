@@ -12,7 +12,7 @@ from hid_pilot.train_healer import TrainConfig, TrainPolicy
 def overwhelmed(strong=True):
     policy = TrainPolicy(TrainConfig(mass_major_cast=.4, verify_seconds=.1), 0.)
     policy.ready_at["balance"] = 100.
-    policy.ready_at["area_heal"] = 100.
+    policy.ready_at["circlet_of_heal"] = 100.
     initial = state(0., tank=.48)
     policy.ingest(initial)
     policy.committed(HealDecision(kind="cast", skill="mass_major", reason="test"), initial, 0.)
@@ -50,7 +50,7 @@ def test_destroyer_still_blocks_emergency_targeted_heal():
     assert not policy.needs_single(current, "@slot3")
 
 
-@pytest.mark.parametrize("hp, expected", [(.35, "area_heal"), (.36, "group")])
+@pytest.mark.parametrize("hp, expected", [(.35, "circlet_of_heal"), (.36, "group")])
 def test_space_heals_low_party_hp_when_balance_on_cooldown(hp, expected):
     policy = TrainPolicy(TrainConfig(), 0.)
     policy.ready_at["balance"] = 30.
@@ -65,10 +65,10 @@ def test_space_cooldown_is_twenty_five_seconds_and_cast_is_point_four():
     current = state(0., tank=.3)
     decision = policy.decide(current, 0.)
     policy.committed(decision, current, 0.)
-    assert policy.config.cast_seconds("area_heal") == .4
-    assert policy.ready_at["area_heal"] == 25.
-    assert not policy.ready("area_heal", 24.99)
-    assert policy.ready("area_heal", 25.)
+    assert policy.config.cast_seconds("circlet_of_heal") == .4
+    assert policy.ready_at["circlet_of_heal"] == 25.
+    assert not policy.ready("circlet_of_heal", 24.99)
+    assert policy.ready("circlet_of_heal", 25.)
     assert policy.decide(state(.1, tank=.3), .1).kind == "wait"
 
 
@@ -91,7 +91,7 @@ def test_runtime_space_has_no_target_click_and_schedules_post_heal_step(monkeypa
     assert healer.active_cast[1] == now[0] + .4
     healer.policy.ready_at.clear()
     healer.restore_timers()
-    assert healer.policy.ready_at["area_heal"] == now[0] + 25
+    assert healer.policy.ready_at["circlet_of_heal"] == now[0] + 25
 
 
 def test_emergency_target_is_selected_but_new_snapshot_can_cancel_cast(monkeypatch, tmp_path):
@@ -136,7 +136,7 @@ def test_old_self_probe_cannot_bypass_space_cooldown():
 
     policy.phase = TrainPhase.COMBAT
     policy.self_attempt_since, policy.self_attempt_count = 0., 2
-    policy.ready_at.update(balance=30., self_rescue=30., area_heal=25.)
+    policy.ready_at.update(balance=30., self_rescue=30., circlet_of_heal=25.)
     result = policy.decide(current, 3.)
     assert result.kind != "probe"
-    assert result.skill != "area_heal"
+    assert result.skill != "circlet_of_heal"

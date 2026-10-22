@@ -98,6 +98,28 @@ class NumbersReader:
                 self.cache.popitem(last=False)
         return result
 
+    def read_text(self, bgr: np.ndarray) -> tuple[str, float] | None:
+        """
+        Распознаёт явно размеченную строку имени без поиска текста на кадре.
+        """
+        if bgr.size == 0 or min(bgr.shape[:2]) < 3:
+            return None
+        self.prepare()
+        low, high = np.min(bgr, axis=2), np.max(bgr, axis=2)
+        foreground = (low >= 125) & (high.astype(int) - low.astype(int) <= 65)
+        mask = cv2.cvtColor(np.where(foreground, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        candidates = []
+        with self.lock:
+            for crop in (bgr, mask):
+                result, _ = self.engine(cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC),
+                                        use_det=False, use_cls=False)
+                if result is not None and len(result) == 1:
+                    text, score = result[0]
+                    text = " ".join(str(text).split())
+                    if float(score) >= .9 and any(char.isalpha() for char in text) and "/" not in text:
+                        candidates.append((text, float(score)))
+        return max(candidates, key=lambda item: item[1]) if candidates else None
+
     def detect(self, bgr: np.ndarray) -> list[tuple[list[list[float]], str, float]]:
         self.prepare()
         with self.lock:

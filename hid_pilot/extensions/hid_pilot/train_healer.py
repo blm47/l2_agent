@@ -3,7 +3,6 @@
 """
 
 from enum import StrEnum
-from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -11,9 +10,7 @@ from hid_pilot.healer import HealDecision, HealerConfig, HealerSnapshot, HealPol
 
 
 class TrainConfig(HealerConfig):
-    area_heal_key: Literal["SPACE"] = "SPACE"
-    area_heal_cast: float = Field(default=.4, gt=0, le=30)
-    area_heal_cooldown: float = Field(default=25, ge=25, le=3600)
+    circlet_of_heal_enabled: bool = True
     auto_loot: bool = False
     follow_key: str | None = "9"
     follow_seconds: float = Field(default=2.5, ge=1, le=300)
@@ -357,9 +354,9 @@ class TrainPolicy(HealPolicy):
             # Первый масс-хил не должен вытеснять спасение готовыми скиллами во всех фазах.
             if self.ready("balance", now) and health[lowest] <= self.config.critical_hp:
                 return self.cast("balance", "После первого масс-хила: выровнять HP и спасти проседающую цель")
-        if (min(health.values()) <= self.config.critical_hp
-                and now < self.ready_at.get("balance", 0) and self.ready("area_heal", now)):
-            return self.cast("area_heal", "Низкое HP: хил вокруг себя Пробелом, баланс в откате")
+        if (self.circlet_of_heal_needed(state)
+                and now < self.ready_at.get("balance", 0) and self.ready("circlet_of_heal", now)):
+            return self.cast("circlet_of_heal", "Низкое HP: хил вокруг себя Пробелом, баланс в откате")
         if health[lowest] <= self.config.emergency_hp + 1e-9:
             return self.rescue_tank(state, now, lowest)
         targeted = self.urgent_targeted_heal(state, now)

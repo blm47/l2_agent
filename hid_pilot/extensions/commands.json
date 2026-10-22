@@ -1,6 +1,13 @@
 {
   "api_version": 1,
   "commands": {
+    "farm_ee": {
+      "arguments": 2,
+      "config": "hid_pilot.farm_ee:EEConfig",
+      "prepare": "hid_pilot.farm_ee:prepare_extension",
+      "run": "hid_pilot.farm_ee:run_extension",
+      "exclusive_observer": true
+    },
     "healer_train": {
       "arguments": 3,
       "config": "hid_pilot.train_healer:TrainConfig",

@@ -72,7 +72,7 @@ class Control:
             args = fields[2:]
             if name == "HELLO" and not args:
                 self.disarm()
-                result = "HID_PILOT_V4"
+                result = "HID_PILOT_V5"
             elif name == "STOP" and not args:
                 self.disarm()
                 result = "STOPPED"
@@ -89,6 +89,12 @@ class Control:
             elif name == "HB" and not args and self.armed:
                 self.heartbeat = self.clock()
                 result = "ALIVE"
+            elif name == "SWITCH" and args == ["ALT+TAB", "80"] and not self.armed and not self.active:
+                # Отдельное переключение, без разрешения ALT+TAB в игровых макросах.
+                self.active = True
+                self.deadline = self.clock() + .08
+                self.keyboard.send_report(bytes((4, 0, 43, 0, 0, 0, 0, 0)))
+                result = "SENT"
             elif name == "MOVE" and len(args) == 2 and self.armed and not self.active:
                 dx, dy = int(args[0]), int(args[1])
                 if not -16 <= dx <= 16 or not -16 <= dy <= 16:
@@ -110,6 +116,8 @@ class Control:
                     device = self.keyboard
                 elif name == "KEY":
                     usage = KEYS[args[0]]
+                    if usage in (226, 230):
+                        raise ValueError("ALT")
                     # Модификатор занимает бит первого байта, а не слот обычной клавиши.
                     modifier = 1 << (usage - 224) if usage >= 224 else 0
                     report = bytes((modifier, 0, 0 if modifier else usage, 0, 0, 0, 0, 0))
@@ -120,6 +128,8 @@ class Control:
                 # Учёт начинается до USB-вызова, чтобы ошибка не скрыла удержание.
                 self.active = True
                 self.deadline = self.clock() + duration / 1000
+                # Перед любым нажатием явно отпускаем все модификаторы, включая ALT.
+                self.keyboard.send_report(bytes(8))
                 device.send_report(report)
                 result = "SENT"
             else:

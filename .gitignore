@@ -7,6 +7,7 @@ Ultralytics/
 .python/
 venv/
 .pytest_cache/
+.test-artifacts/
 .mypy_cache/
 .ruff_cache/
 
@@ -34,6 +35,7 @@ artifacts/
 # Local config
 .env
 config.local.yaml
+telegram.toml
 config/roi.local.json
 config/roi.local.json.tmp
 

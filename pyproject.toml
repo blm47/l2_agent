@@ -44,6 +44,7 @@ packages = ["src/l2_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+cache_dir = ".test-artifacts/pytest-cache"
 
 [tool.ruff]
 line-length = 100

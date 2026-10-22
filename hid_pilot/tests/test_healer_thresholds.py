@@ -34,7 +34,7 @@ def test_balance_gap_is_strict_and_uses_other_members_average(low, expected):
 
 @pytest.mark.parametrize("count,drop,expected", [
     (6, .151, "group"), (6, .15, None),
-    (6, .331, "mass_major"), (6, .33, "group"),
+    (6, .331, "group"), (6, .33, "group"),
     (5, .34, None),
 ])
 def test_mass_heal_requires_more_than_seventy_percent_and_strict_drop(count, drop, expected):

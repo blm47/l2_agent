@@ -4,6 +4,7 @@
 
 import logging
 import sqlite3
+from collections import Counter, deque
 from pathlib import Path
 
 from hid_pilot.target import TargetObservation
@@ -58,6 +59,7 @@ class MonsterNameConsensus:
         self.last_at = float("-inf")
         self.last_valid_at = float("-inf")
         self.saved = False
+        self.votes: deque[tuple[float, str]] = deque(maxlen=12)
 
     def observe(self, observation: TargetObservation, now: float) -> TargetObservation:
         if observation.at <= self.last_at:
@@ -69,19 +71,21 @@ class MonsterNameConsensus:
                  and any(char.isalpha() for char in name)
                  and all(char.isprintable() for char in name))
         if not valid:
-            self.pending = None
             self.confirmations = 0
-            self.saved = False
             return observation.model_copy(update={"name": None if observation.kind == "monster" else observation.name})
-        if name.casefold() != (self.pending or "").casefold() or observation.at - self.last_valid_at > 3:
+        if name.casefold() != (self.pending or "").casefold():
             self.pending = name
-            self.confirmations = 0
             self.saved = False
+        while self.votes and observation.at - self.votes[0][0] > 30:
+            self.votes.popleft()
+        self.votes.append((observation.at, name.casefold()))
+        counts = Counter(key for _, key in self.votes)
+        dominant = counts[name.casefold()] / len(self.votes) >= .7
         self.last_valid_at = observation.at
-        self.confirmations = min(6, self.confirmations + 1)
+        self.confirmations = min(6, counts[name.casefold()])
         # Сначала два одинаковых чтения, затем сверка; новые имена требуют шести.
-        canonical = self.catalogue.lookup(name) if self.confirmations >= 2 else None
-        if self.confirmations >= 6 and not self.saved:
+        canonical = self.catalogue.lookup(name) if self.confirmations >= 2 and dominant else None
+        if self.confirmations >= 6 and dominant and not self.saved:
             canonical = self.catalogue.confirm(name, observation.level)
             self.saved = canonical is not None
         return observation.model_copy(update={"name": canonical, "raw_name": name,

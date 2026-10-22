@@ -79,24 +79,26 @@ def test_expired_positive_effect_cannot_authorize_new_single_heal():
     assert not policy.needs_single(state(2.8, tank=.4), "@slot3")
 
 
-@pytest.mark.parametrize("key", list("WASD"))
-def test_step_waits_for_cast_then_holds_one_random_key(monkeypatch, tmp_path, key):
+def test_due_step_waits_for_cast_then_checks_periodic_movement(monkeypatch, tmp_path):
     healer, controller, observer, now = runtime(monkeypatch, tmp_path)
+    healer.config.random_movement = True
+    healer.next_random_move = 0
+    healer.try_random_movement = Mock(return_value=True)
     healer.active_cast = (HealDecision(kind="cast", skill="mass_major", reason="test"), 10.3, False)
     controller.pause_generation = 0
     controller.wait.side_effect = lambda seconds: now.__setitem__(0, now[0] + seconds)
     observer.snapshots.side_effect = lambda: (state(now[0]),)
-    choose = Mock(return_value=key)
-    monkeypatch.setattr("hid_pilot.train_runtime.random.choice", choose)
     healer.step_after_heal()
     assert now[0] == pytest.approx(10.3)
-    choose.assert_called_once_with(("W", "A", "S", "D"))
-    controller.key.assert_called_once_with(key, 1000)
+    healer.try_random_movement.assert_called_once()
+    controller.key.assert_not_called()
 
 
 @pytest.mark.parametrize("change", ["pause", "death", "stale"])
 def test_interrupted_cast_never_starts_random_movement(monkeypatch, tmp_path, change):
     healer, controller, observer, now = runtime(monkeypatch, tmp_path)
+    healer.config.random_movement = True
+    healer.next_random_move = 0
     healer.active_cast = (HealDecision(kind="cast", skill="group", reason="test"), 11., False)
     controller.pause_generation = 0
 

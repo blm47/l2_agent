@@ -56,7 +56,7 @@ def test_farm_observations_count_and_report_monster_death(monkeypatch):
         controller.capture.return_value = image
         farm._observe()
     assert farm.mob_statistics.counts == {"Gremlin": 1}
-    assert "Gremlin ×1" in notify.state.call_args.args[0]["text"]
+    assert "1. 1 — Gremlin" in notify.state.call_args.args[0]["text"]
     notify.assert_not_called()
     controller.key.assert_not_called()
 

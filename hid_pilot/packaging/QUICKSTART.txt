@@ -1,4 +1,4 @@
-HID Pilot 0.3.1 — Windows 10/11 x64
+HID Pilot 0.5.0 — Windows 10/11 x64
 
 Запуск:
 1. Скопируйте HID_Pilot.exe и нужную папку extensions рядом с ним. Python и интернет не нужны.
@@ -11,7 +11,7 @@ HID Pilot 0.3.1 — Windows 10/11 x64
 3. Дождитесь диска CIRCUITPY и нажмите «Обновить платы и COM-порты».
 4. Выберите CIRCUITPY и нажмите «Установить / обновить HID Pilot».
 5. Безопасно извлеките CIRCUITPY в Windows, переподключите USB без BOOTSEL.
-6. Нажмите «Проверить прошивку». Нужны SHA256 файлов, HELLO HID_PILOT_V3 и STATUS DISARMED.
+6. Нажмите «Проверить прошивку». Нужны SHA256 файлов, HELLO HID_PILOT_V5 и STATUS DISARMED.
    CDC data port выбирается в главном окне после успешной проверки.
 
 Существующая HID-плата:

@@ -44,7 +44,7 @@ def test_ten_hour_limits_apply_to_configs_and_outer_runner(monkeypatch, tmp_path
         assert cfg().max_seconds == 36000
         with pytest.raises(ValueError):
             cfg(max_seconds=36001)
-    assert FarmConfig(rest="S").max_seconds == 36000
+    assert FarmConfig(rest="S").max_seconds == 10800
 
 
 def test_f10_runtime_is_targetless_and_preserves_its_cooldown(monkeypatch, tmp_path):
@@ -67,19 +67,26 @@ def test_death_during_runtime_does_not_send_movement(monkeypatch, tmp_path):
     healer.policy.busy_until = 100
     healer.approach_until = 50
     observer.snapshots.return_value = (initial.model_copy(update={"hp": 0, "mp": None}),)
+    waiting = Mock(side_effect=RuntimeError("HP = 0: лимит ожидания"))
+    monkeypatch.setattr("hid_pilot.healer_runtime.wait_for_resurrection", waiting)
     with pytest.raises(RuntimeError, match="HP = 0"):
         healer.run(deadline=20)
     controller.key.assert_not_called()
     controller.click.assert_not_called()
+    waiting.assert_called_once()
+    assert healer.approach_until is None
 
 
-def test_generic_farm_stops_on_zero_hp_before_retrying_unknown_mp():
+def test_generic_farm_waits_on_zero_hp_before_retrying_unknown_mp(monkeypatch):
     controller, profile = Mock(), Mock()
     profile.read.side_effect = [0., None, 1.]
     farmer = Farmer(controller, profile, FarmConfig(rest="S"), Mock(), lambda: 0.)
+    waiting = Mock(side_effect=RuntimeError("HP = 0: лимит ожидания"))
+    monkeypatch.setattr("hid_pilot.farm.wait_for_resurrection", waiting)
     with pytest.raises(RuntimeError, match="HP = 0"):
         farmer.observe()
     controller.key.assert_not_called()
+    waiting.assert_called_once()
 
 
 def test_healer_loop_finishes_at_ten_hour_deadline(monkeypatch, tmp_path):

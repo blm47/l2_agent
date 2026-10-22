@@ -13,8 +13,16 @@ from hid_pilot.monster_catalogue import MonsterCatalogue, MonsterNameConsensus
 from hid_pilot.numbers import NumbersReader
 from hid_pilot.party import PartyMember, PartyProfile, read_party
 from hid_pilot.target import TargetObservation, TargetReader, target_text_signature
+from hid_pilot.system_chat import ChatMessage, SystemChatOCR
+from hid_pilot.party_class import PartyClassDetector
 
 logger = logging.getLogger("hid_pilot.farm.observer")
+_background_reader = NumbersReader()
+
+
+def background_numbers() -> NumbersReader:
+    # Отдельный от быстрых полос engine загружается до ARM и повторно используется между запусками.
+    return _background_reader
 
 
 class FarmIdentityCache:
@@ -22,8 +30,9 @@ class FarmIdentityCache:
                  catalogue: MonsterCatalogue | None = None) -> None:
         self.profile = profile
         self.party = party
+        self.class_detector = PartyClassDetector(party) if party is not None else None
         # Отдельный OCR не блокирует быстрые HP/MP общим lock.
-        self.numbers = NumbersReader()
+        self.numbers = background_numbers()
         self.reader = TargetReader(profile)
         self.consensus = MonsterNameConsensus(catalogue) if catalogue is not None else None
         self.lock = threading.Lock()
@@ -31,6 +40,7 @@ class FarmIdentityCache:
         self.pending: tuple | None = None
         self.result: tuple | None = None
         self.epoch = 0
+        self.chat = SystemChatOCR(profile, self.numbers)
         self.submitted = float("-inf")
         self.worker = threading.Thread(target=self._run, name="FarmIdentityOCR", daemon=True)
         self.worker.start()
@@ -88,6 +98,7 @@ class FarmIdentityCache:
                 continue
             image, at, signature, epoch = pending
             try:
+                self.read_chat(image, at)
                 if self.profile.target_panel or self.profile.target_player_panel:
                     # Каждый голос — реальный запуск OCR по отдельному свежему кадру.
                     self.reader.cached_signature = None
@@ -97,6 +108,8 @@ class FarmIdentityCache:
                         image, "target_level", self.numbers))
                 level = self.profile.read_level(image, "own_level", self.numbers)
                 members = read_party(image, self.party, self.numbers) if self.party is not None else []
+                if self.class_detector is not None:
+                    members = self.class_detector.apply(image, members, at)
                 with self.lock:
                     if epoch == self.epoch:
                         if self.consensus is not None:
@@ -105,6 +118,20 @@ class FarmIdentityCache:
             except Exception:
                 logger.warning("Фоновый OCR фарма временно недоступен", exc_info=True)
 
+    def reset_chat(self) -> None:
+        self.chat.reset_chat()
+
+    def chat_ready(self) -> bool:
+        return self.chat.chat_ready()
+
+    def take_chat_events(self) -> list[ChatMessage]:
+        return self.chat.take_chat_events()
+
+    def read_chat(self, image: np.ndarray, at: float) -> None:
+        self.chat.numbers = self.numbers
+        self.chat.read_chat(image, at)
+
     def close(self) -> None:
+        self.chat.close()
         self.stop_event.set()
         self.worker.join(timeout=2)

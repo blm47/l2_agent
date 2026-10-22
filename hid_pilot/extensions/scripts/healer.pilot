@@ -1,5 +1,5 @@
 # Хилер: перед START выполните автопоиск HP/MP/CP и пати в окне хилера.
-# Профили привязаны к размеру окна. Нужна прошивка HID_PILOT_V2.
+# Профили привязаны к размеру окна. Для random_movement нужна прошивка HID_PILOT_V4.
 # Выделение ведущего одним ЛКМ, клавиша 9 подходит к нему на игровую дистанцию 400.
 set follow_slot 1
 set follow_seconds 4
@@ -9,6 +9,8 @@ set cursor_jitter 0.15
 set party_click_jitter 0.001
 set mp_buff_key F11
 set humanize true
+# Случайное W/A/S/D раз в 30–60 секунд на 1–2 секунды; нужна прошивка V4.
+set random_movement true
 set chain_heals true
 set cancel_unneeded_casts false
 set self_rescue_key 4
@@ -19,6 +21,13 @@ set aura_key F8
 set heal_press_interval 0.15
 set auto_loot true
 set loot_key C
+# Кольцо лечения при низком HP и балансе в откате; число персонажей включает себя.
+set circlet_of_heal_enabled true
+set circlet_of_heal_key SPACE
+set circlet_of_heal_hp 0.35
+set circlet_of_heal_min_members 1
+set circlet_of_heal_cast 0.4
+set circlet_of_heal_cooldown 25
 set mp_buff_cooldown 900
 set mp_buff_cast 1
 set mp_buff2_key F10

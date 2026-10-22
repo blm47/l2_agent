@@ -2,7 +2,8 @@
 # tank_slot 0 — последняя видимая строка при первом достоверном наблюдении.
 # Для явного выбора танка задайте номер 1–8. Следование включено во всех фазах.
 # Массовый хил с места; одиночный — после наблюдаемого эффекта по участнику.
-# После лечебного каста — случайная W/A/S/D на 1000 мс, независимо от humanize.
+# Случайное W/A/S/D раз в 30–60 секунд на 1–2 секунды; нужна прошивка V4.
+set random_movement true
 set tank_slot 0
 set invocation_mp 0.80
 set quiet_seconds 30
@@ -21,9 +22,12 @@ set self_rescue_cooldown 8
 set aura_enabled true
 set aura_key F8
 set aura_cast 0.3
-set area_heal_key SPACE
-set area_heal_cast 0.4
-set area_heal_cooldown 25
+set circlet_of_heal_key SPACE
+set circlet_of_heal_enabled true
+set circlet_of_heal_hp 0.35
+set circlet_of_heal_min_members 1
+set circlet_of_heal_cast 0.4
+set circlet_of_heal_cooldown 25
 set heal_press_interval 0.15
 set auto_loot false
 set loot_key C

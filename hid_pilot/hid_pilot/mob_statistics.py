@@ -45,8 +45,15 @@ class MobStatistics:
 
     def summary(self, now: float) -> str:
         elapsed = max(0, int(now - self.started))
-        names = ", ".join(f"{name} ×{count}" for name, count in self.counts.most_common(10)) or "нет"
-        return f"ФАРМ — {elapsed // 60}:{elapsed % 60:02d}; подтверждено убийств: {sum(self.counts.values())}\n{names}"
+        names = self.ranked_counts()
+        return f"ФАРМ — {elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}; подтверждено убийств: {sum(self.counts.values())}\n{names}"
+
+    def ranked_counts(self) -> str:
+        """
+        Выводит все виды мобов по убыванию убийств, при равенстве — по имени.
+        """
+        ranked = sorted(self.counts.items(), key=lambda item: (-item[1], item[0].casefold(), item[0]))
+        return "\n".join(f"{rank}. {count} — {name}" for rank, (name, count) in enumerate(ranked, 1)) or "нет"
 
     def record_kill(self, name: str | None) -> None:
         """
@@ -102,11 +109,9 @@ class MobStatistics:
         if now < self.next_report:
             return None
         elapsed = max(0, int(now - self.started))
-        names = ", ".join(f"{name} ×{count}" for name, count in self.counts.most_common(10)) or "нет"
-        if len(self.counts) > 10:
-            names += f", ещё видов: {len(self.counts) - 10}"
+        names = self.ranked_counts()
         message = (f"Мобы по таргету: всего {sum(self.counts.values())}, за последний интервал {self.minute_count}; "
-                   f"время {elapsed // 60}:{elapsed % 60:02d}; {names}")
+                   f"время {elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}\n{names}")
         logger.info(message)
         self.minute_count = 0
         self.next_report = now + 60

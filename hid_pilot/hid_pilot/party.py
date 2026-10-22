@@ -21,10 +21,18 @@ class PartyProfile(BaseModel):
     mp: BarBox
     row_step: int = Field(ge=20, le=500)
     row_offsets: list[int] = Field(default_factory=list, max_length=8)
+    class_icon: BarBox | None = None
+    class_templates: dict[str, list[list[int]]] = Field(default_factory=dict, max_length=2)
 
     @model_validator(mode="after")
     def rows_fit(self) -> "PartyProfile":
-        boxes = (self.name, self.cp, self.hp, self.mp)
+        boxes = (self.name, self.cp, self.hp, self.mp) + ((self.class_icon,) if self.class_icon else ())
+        for label, pixels in self.class_templates.items():
+            if (label not in {"Elven Elder", "Shilien Elder"} or len(pixels) != 32
+                    or any(len(row) != 32 or any(not 0 <= pixel <= 255 for pixel in row) for row in pixels)):
+                raise ValueError("Эталон класса должен содержать 32×32 пикселя для ЕЕ или ШЕ")
+            if float(np.asarray(pixels).std()) < 10:
+                raise ValueError("Эталон иконки класса не должен быть однотонным")
         offsets = self.row_offsets or [slot * self.row_step for slot in range(8)]
         if len(offsets) != 8 or offsets[0] != 0:
             raise ValueError("Нужны восемь смещений строк, первое — 0")
@@ -53,6 +61,9 @@ class PartyMember(BaseModel):
     cp: float | None = Field(default=None, ge=0, le=1)
     hp: float | None = Field(default=None, ge=0, le=1)
     mp: float | None = Field(default=None, ge=0, le=1)
+    player_class: str | None = None
+    class_confidence: float = Field(default=0, ge=0, le=1)
+    class_icon_checked: bool = False
 
     @property
     def target_id(self) -> str:

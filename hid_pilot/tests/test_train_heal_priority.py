@@ -38,7 +38,7 @@ def test_targeted_heals_precede_ready_repeat_group(battle_ready, expected):
 
 def test_stable_low_hp_without_mass_effect_does_not_authorize_single():
     policy, _ = after_opening()
-    policy.ready_at.update(balance=100., area_heal=100., battle=100., group=0.)
+    policy.ready_at.update(balance=100., circlet_of_heal=100., battle=100., group=0.)
     for index in range(4, 41):
         current = state(index / 10, tank=.3)
         policy.ingest(current)

@@ -28,6 +28,27 @@ def test_chat_chord_usb_report_and_watchdog_release():
     keyboard.send_report.assert_called_with(bytes(8))
 
 
+def test_switch_alt_tab_only_disarmed_and_releases_on_deadline():
+    keyboard = Mock()
+    now = [0.]
+    board = board_module.Control(keyboard, Mock(), lambda: now[0])
+    assert board.command(b"1 SWITCH ALT+TAB 80") == b"1 OK SENT\n"
+    keyboard.send_report.assert_called_with(bytes((4, 0, 43, 0, 0, 0, 0, 0)))
+    assert not board.armed
+    now[0] = .08
+    board.tick(True)
+    keyboard.send_report.assert_called_with(bytes(8))
+    board.command(b"2 ARM")
+    assert board.command(b"3 SWITCH ALT+TAB 80") == b"3 ERR REJECTED\n"
+    assert not board.armed
+
+
+def test_switch_rejects_unbounded_duration_and_other_chords():
+    board = board_module.Control(Mock(), Mock(), lambda: 0.)
+    assert b"ERR" in board.command(b"1 SWITCH ALT+TAB 1000")
+    assert b"ERR" in board.command(b"2 SWITCH WIN+R 80")
+
+
 @pytest.mark.parametrize("chord", [b"ALT+TAB", b"CTRL+ESC", b"WIN+R", b"SHIFT+ENTER"])
 def test_firmware_rejects_os_chords(chord):
     board = board_module.Control(Mock(), Mock(), lambda: 0.)
@@ -39,7 +60,7 @@ def test_firmware_rejects_os_chords(chord):
 def test_hid_move_and_heartbeat_timeout():
     keyboard, mouse, clock = Mock(), Mock(), Mock(return_value=1.0)
     board = board_module.Control(keyboard, mouse, clock)
-    assert board.command(b"1 HELLO") == b"1 OK HID_PILOT_V4\n"
+    assert board.command(b"1 HELLO") == b"1 OK HID_PILOT_V5\n"
     assert board.command(b"2 MOVE 1 1") == b"2 ERR REJECTED\n"
     board.command(b"3 ARM")
     assert board.command(b"4 MOVE -8 7") == b"4 OK MOVED\n"
@@ -114,7 +135,8 @@ def test_allowlist_matches_parser():
     assert board_module.KEYS == usages
 
 
-@pytest.mark.parametrize("key,usage", list(board_module.KEYS.items()))
+@pytest.mark.parametrize("key,usage", [(key, usage) for key, usage in board_module.KEYS.items()
+                                      if usage not in (226, 230)])
 def test_every_keyboard_key_report_and_release(key, usage):
     keyboard, clock = Mock(), Mock(return_value=1.)
     board = board_module.Control(keyboard, Mock(), clock)
@@ -125,6 +147,30 @@ def test_every_keyboard_key_report_and_release(key, usage):
     clock.return_value = 1.11
     board.tick(True)
     keyboard.send_report.assert_called_with(bytes(8))
+
+
+@pytest.mark.parametrize("key", ["ALT", "LALT", "RALT"])
+def test_alt_cannot_be_held_by_game_key_command(key):
+    keyboard = Mock()
+    board = board_module.Control(keyboard, Mock(), lambda: 0.)
+    board.command(b"1 ARM")
+    keyboard.send_report.reset_mock()
+    assert b"ERR" in board.command(f"2 KEY {key} 100".encode())
+    keyboard.send_report.assert_called_once_with(bytes(8))
+
+
+@pytest.mark.parametrize("action", [b"KEY F6 100", b"CHORD SHIFT+A 80", b"BUTTON left 80"])
+def test_modifier_release_report_precedes_every_press(action):
+    keyboard, mouse = Mock(), Mock()
+    events = []
+    keyboard.send_report.side_effect = lambda report: events.append(("keyboard", report))
+    mouse.send_report.side_effect = lambda report: events.append(("mouse", report))
+    board = board_module.Control(keyboard, mouse, lambda: 0.)
+    board.command(b"1 ARM")
+    events.clear()
+    assert board.command(b"2 " + action) == b"2 OK SENT\n"
+    assert events[0] == ("keyboard", bytes(8))
+    assert len(events) == 2
 
 
 @pytest.mark.parametrize("key", ["\\", "BACKSLASH", "NONUSBACKSLASH", "49", "100"])

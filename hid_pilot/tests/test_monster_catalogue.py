@@ -71,7 +71,24 @@ def test_long_gap_starts_confirmation_again(tmp_path):
     consensus = MonsterNameConsensus(MonsterCatalogue(tmp_path / "monsters.sqlite3"))
     consensus.observe(observation(0), 0)
     consensus.observe(observation(.5), .5)
-    assert consensus.observe(observation(5), 5).name_confirmations == 1
+    assert consensus.observe(observation(35), 35).name_confirmations == 1
+
+
+def test_single_bad_reading_does_not_erase_matching_name_evidence(tmp_path):
+    catalogue = MonsterCatalogue(tmp_path / "monsters.sqlite3")
+    consensus = MonsterNameConsensus(catalogue)
+    readings = ["Gremlin", "Gremlin", "Gremiin", "Gremlin", "Gremlin", "Gremlin", "Gremlin"]
+    for index, name in enumerate(readings):
+        result = consensus.observe(observation(index, name), index)
+    assert result.name == "Gremlin"
+    assert catalogue.lookup("Gremlin") == "Gremlin"
+
+
+def test_unknown_ocr_frame_does_not_erase_valid_votes(tmp_path):
+    consensus = MonsterNameConsensus(MonsterCatalogue(tmp_path / "monsters.sqlite3"))
+    consensus.observe(observation(0), 0)
+    consensus.observe(observation(1, confidence=.5), 1)
+    assert consensus.observe(observation(2), 2).name_confirmations == 2
 
 
 def test_known_name_does_not_guess_a_similar_new_name(tmp_path):
@@ -98,7 +115,7 @@ def test_background_confirmation_runs_real_ocr_six_times_on_unchanged_pixels(mon
     points = [[0, 0], [50, 0], [50, 10], [0, 10]]
     hp_points = [[0, 20], [50, 20], [50, 30], [0, 30]]
     numbers.detect.return_value = [(points, "Gremlin", .99), (hp_points, "100 / 100", .99)]
-    monkeypatch.setattr("hid_pilot.farm_observer.NumbersReader", lambda: numbers)
+    monkeypatch.setattr("hid_pilot.farm_observer.background_numbers", lambda: numbers)
     catalogue = MonsterCatalogue(tmp_path / "monsters.sqlite3")
     profile = BarProfile(width=200, height=100, target_panel=BarBox(x1=0, y1=0, x2=1, y2=1))
     cache = FarmIdentityCache(profile, None, catalogue)

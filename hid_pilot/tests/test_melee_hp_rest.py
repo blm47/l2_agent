@@ -23,8 +23,8 @@ def test_low_hp_sits_even_with_selected_live_target_and_normal_mp():
 
     controller.wait.side_effect = wait
     farmer.recover()
-    assert seated_at[0] >= 3
-    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "="]
+    assert seated_at[0] >= farmer.config.quiet_seconds
+    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "-"]
     farmer.fight.assert_not_called()
     assert not farmer.sitting
 
@@ -32,6 +32,7 @@ def test_low_hp_sits_even_with_selected_live_target_and_normal_mp():
 def test_hp_rest_kills_aggro_then_sits_until_ninety_percent():
     farmer, controller, now, state = harness()
     state[:] = [.2, .5, 1.]
+    farmer.last_resources = (.21, None)
     farmer.under_attack = True
     farmer.quiet_since = 0.
 
@@ -53,7 +54,7 @@ def test_hp_rest_kills_aggro_then_sits_until_ninety_percent():
     farmer.recover()
     farmer.fight.assert_called_once_with()
     assert state[0] == .9
-    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "="]
+    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "-"]
 
 
 @pytest.mark.parametrize("hp,expected", [(.29, True), (.3, False), (.4, False)])
@@ -80,13 +81,28 @@ def test_rest_request_survives_heal_above_thirty_percent():
 
     controller.wait.side_effect = wait
     farmer.recover()
-    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "="]
+    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "-"]
     assert not farmer.rest_requested
 
 
 def test_resume_hp_must_exceed_rest_threshold():
     with pytest.raises(ValueError):
         MeleeConfig(rest="=", hp_rest_threshold=.3, hp_resume=.3)
+
+
+def test_quiet_seconds_defaults_to_two_and_half_seconds():
+    assert MeleeConfig(rest="=").quiet_seconds == 2.5
+
+
+@pytest.mark.parametrize("seconds", [1, 2.5, 10])
+def test_quiet_seconds_accepts_requested_range(seconds):
+    assert MeleeConfig(rest="=", quiet_seconds=seconds).quiet_seconds == seconds
+
+
+@pytest.mark.parametrize("seconds", [.99, 10.01])
+def test_quiet_seconds_rejects_values_outside_requested_range(seconds):
+    with pytest.raises(ValueError):
+        MeleeConfig(rest="=", quiet_seconds=seconds)
 
 
 def test_observation_latches_rest_after_hp_drops_below_threshold(monkeypatch):

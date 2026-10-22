@@ -2,6 +2,18 @@
 
 Use this file for concise architecture decisions.
 
+## 2026-10-21 — HID Pilot two-window scenario
+
+The standalone HID Pilot adds a farmer/support scenario with one shared Pico
+transport and ActionController. Window switches release/disarm HID and validate
+PID, geometry and focus before rearming. Configuration and observation profiles
+are separate per role. Main L2 Agent milestones and input architecture are unchanged.
+Details: [HID Pilot decision log](../hid_pilot/DECISIONS.md) and
+[two-window setup](../hid_pilot/DUO.md). Real-client acceptance remains pending.
+The user's follow-up replaces the standalone simplified Duo loop with
+`DuoFarmer(MeleeFarmer)` and `DuoConfig(MeleeConfig)`, preserving the existing
+melee algorithms and migrating user-edited Duo settings without changing ROIs.
+
 ## ADR-009 — M2 local advisory provider
 Status: accepted for initial implementation; runtime validation pending
 

@@ -11,6 +11,13 @@ from hid_pilot.target import TargetObservation
 
 
 def harness(**changes):
+    changes.setdefault("buff_delay_minutes", 0)
+    changes.setdefault("aggro_key", None)
+    # Сценарии боя и восстановления ниже изолированы от стартового подбора.
+    changes.setdefault("regen_enabled", True)
+    changes.setdefault("pre_attack_loot", False)
+    changes.setdefault("overhit_early_chance", 0.)
+    changes.setdefault("search_cycles", 1)
     now = [0.]
     controller = Mock()
     controller.transport.protocol = "HID_PILOT_V4"
@@ -28,7 +35,80 @@ def test_approach_wait_starts_after_attack_and_switches_target():
     farmer.fight(1.)
     assert now[0] >= 5.1
     assert controller.key.call_args_list[0].args == ("R", 100)
-    assert controller.key.call_count == 1
+    assert controller.key.call_args_list[-1].args == ("ESC", 100)
+    assert controller.key.call_count > 2
+    assert all(call.args == ("R", 100) for call in controller.key.call_args_list[:-1])
+
+
+def test_unreachable_target_is_cleared_before_next_selection_without_loot():
+    farmer, controller, _, _ = harness()
+    farmer.target_pending = True
+    farmer.last_target = TargetObservation(at=0, kind="monster", name="Gremlin", confidence=.99)
+    farmer.fight(1.)
+    keys = [call.args[0] for call in controller.key.call_args_list]
+    assert keys[-1] == "ESC" and set(keys[:-1]) == {"R"}
+    assert not farmer.target_pending
+    assert farmer.last_target is None
+    assert farmer.training_kills == 0
+
+
+def test_target_stops_taking_damage_and_is_cleared_after_stuck_timeout():
+    farmer, controller, _, state = harness(stuck_timeout=1)
+    state[2] = .8
+    farmer.fight(1.)
+    assert controller.key.call_args_list[-1].args == ("ESC", 100)
+    assert farmer.training_kills == 0
+
+
+def test_attack_repeats_every_one_and_half_seconds_without_extending_approach_timeout():
+    farmer, controller, now, _ = harness(attack_delay=1.5, approach_delay=5)
+    attacks = []
+
+    def key(name, duration):
+        if name == farmer.config.attack:
+            attacks.append(now[0])
+        now[0] += duration / 1000
+
+    controller.key.side_effect = key
+    farmer.fight(1.)
+    assert attacks == pytest.approx([0., 1.5, 3., 4.5])
+    assert controller.key.call_args_list[-1].args == ("ESC", 100)
+    assert now[0] < 6
+
+
+def test_dead_target_does_not_receive_scheduled_attack():
+    farmer, controller, now, _ = harness(pickup_loot=False)
+    farmer.observe = lambda: (1., 1., 0. if now[0] >= 1.4 else .8)
+    farmer.fight(1.)
+    assert [call.args[0] for call in controller.key.call_args_list] == ["R"]
+    assert farmer.training_kills == 1
+
+
+def test_recovery_can_continue_beyond_old_two_minute_limit():
+    farmer, controller, now, state = harness()
+    assert farmer.config.rest_timeout == 180
+    state[:] = [1., .05, None]
+    farmer.quiet_since = 0
+    wait = controller.wait.side_effect
+
+    def recover_mana(seconds):
+        wait(seconds)
+        if now[0] >= 130:
+            state[1] = .95
+
+    controller.wait.side_effect = recover_mana
+    farmer.recover()
+    assert 130 <= now[0] < 180
+    assert not farmer.sitting
+
+
+def test_recovery_stops_after_three_minutes_if_mana_does_not_recover():
+    farmer, _controller, now, state = harness()
+    state[:] = [1., .05, None]
+    farmer.quiet_since = 0
+    with pytest.raises(RuntimeError, match="Таймаут восстановления"):
+        farmer.recover()
+    assert 180 <= now[0] < 181
 
 
 def test_lost_target_continues_without_loot():
@@ -42,7 +122,7 @@ def test_dead_target_holds_loot_without_approach():
     farmer, controller, _, state = harness()
     state[2] = 0.
     farmer.fight(1.)
-    assert [call.args for call in controller.key.call_args_list] == [("R", 100), ("5", 1500)]
+    assert [call.args for call in controller.key.call_args_list] == [("R", 100), ("5", 1000)]
 
 
 def test_next_target_tries_three_moves_before_chat_and_exhaustion():
@@ -56,7 +136,7 @@ def test_next_target_tries_three_moves_before_chat_and_exhaustion():
     movements = [(key, ms) for key, ms in keys if key in "WASD"]
     assert len(movements) == 3
     assert all(2000 <= ms <= 3000 for _, ms in movements)
-    assert [call.args[0] for call in controller.target_by_name.call_args_list] == ["Gremlin", "Cloudy Beast"]
+    assert sorted(call.args[0] for call in controller.target_by_name.call_args_list) == ["Cloudy Beast", "Gremlin"]
 
 
 def test_chat_selection_requires_matching_monster():
@@ -102,13 +182,14 @@ def test_rest_waits_for_quiet_and_wakes_when_attacked():
 
     controller.wait.side_effect = wait
     farmer.recover()
-    assert now[0] >= 3
-    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "="]
+    assert now[0] >= farmer.config.quiet_seconds
+    assert [call.args[0] for call in controller.key.call_args_list] == ["=", "-"]
 
 
 def test_rest_kills_aggro_before_sitting():
     farmer, controller, now, state = harness()
-    state[:] = [1., .05, None]
+    state[:] = [.99, .05, None]
+    farmer.last_resources = (1., None)
     farmer.under_attack = True
     farmer.quiet_since = 0.
 

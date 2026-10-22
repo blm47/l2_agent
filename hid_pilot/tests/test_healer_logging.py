@@ -35,7 +35,7 @@ def test_log_explains_persisted_buff_cooldown_and_own_mp_threshold():
     policy.ready_at["mp_buff"] = 930.
     output = support_status(policy, snapshot(at=40., mp=.8), 40.)
     assert "откат 890 с" in output
-    assert "своё MP 80% ≥ 60%" in output
+    assert "своё MP 80% ≥ 80%" in output
 
 
 @pytest.mark.parametrize("skill", ["mp_buff", "invocation"])

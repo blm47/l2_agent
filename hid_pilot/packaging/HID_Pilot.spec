@@ -20,7 +20,11 @@ analysis = Analysis(
     pathex=[str(root)],
     binaries=ocr_binaries + ort_binaries,
     datas=datas,
-    hiddenimports=ocr_hidden + ort_hidden + ["serial.tools.list_ports_windows"],
+    # Эти модули импортируются внешними алгоритмами и не видны обычному анализу EXE.
+    hiddenimports=ocr_hidden + ort_hidden + [
+        "serial.tools.list_ports_windows", "hid_pilot.monster_catalogue",
+        "hid_pilot.resurrection", "hid_pilot.system_chat", "hid_pilot.party_class",
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=["tkinter", "matplotlib", "torch", "tensorflow", "pytest", "IPython",
@@ -36,7 +40,8 @@ single = EXE(
 )
 portable_exe = EXE(
     pyz, analysis.scripts, [], exclude_binaries=True,
-    name="HID_Pilot", debug=False, strip=False, upx=False, console=False,
+    # Отдельное имя исключает коллизию PKG cache с однокомпонентным EXE.
+    name="HID_Pilot_Portable", debug=False, strip=False, upx=False, console=False,
     version=str(root / "packaging" / "version_info.txt"),
 )
 portable = COLLECT(

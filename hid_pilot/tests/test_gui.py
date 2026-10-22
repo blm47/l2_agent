@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -14,6 +16,7 @@ from hid_pilot.auto_numbers import NumberCandidate
 from hid_pilot.auto_review import AutoReview
 from hid_pilot.bars import BarBox
 from hid_pilot.desktop import Target
+from hid_pilot.controller import ActionController
 from hid_pilot.numbers import parse_numbers
 from hid_pilot.picker import ScreenPicker
 
@@ -21,6 +24,219 @@ from hid_pilot.picker import ScreenPicker
 @pytest.fixture(autouse=True)
 def isolated_window_layout(monkeypatch, tmp_path):
     monkeypatch.setattr("hid_pilot.__main__.user_data_dir", lambda: tmp_path)
+
+
+def test_pause_and_stop_do_not_wait_for_controller_lock(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    window = MainWindow()
+    transport = Mock()
+    controller = ActionController(Mock(), transport, lambda: True)
+    locked = threading.Event()
+    release = threading.Event()
+
+    def busy_operation():
+        with controller.lock:
+            locked.set()
+            release.wait(3)
+
+    worker = threading.Thread(target=busy_operation)
+    worker.start()
+    assert locked.wait(1)
+    window.controller = controller
+    try:
+        started = time.monotonic()
+        window.toggle_pause()
+        assert controller.manual_paused.is_set()
+        window.toggle_pause()
+        assert not controller.manual_paused.is_set()
+        window.stop()
+        assert controller.stopped.is_set()
+        app.processEvents()
+        assert time.monotonic() - started < .5
+        transport.stop.assert_not_called()
+        release.set()
+        worker.join(timeout=1)
+        deadline = time.monotonic() + 1
+        while not transport.stop.called and time.monotonic() < deadline:
+            time.sleep(.01)
+        transport.stop.assert_called_once_with()
+    finally:
+        release.set()
+        worker.join(timeout=1)
+        window.controller = None
+        window.close()
+
+
+def test_own_stats_remain_visible_without_recognition(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    window = MainWindow()
+    expected = "СВОИ СТАТЫ\nCP —   HP —   MP —"
+    try:
+        assert expected in window.party_state.toPlainText()
+        window.party.enabled.setChecked(True)
+        assert expected in window.party_state.toPlainText()
+        window.party.poll()
+        assert expected in window.party_state.toPlainText()
+        assert "Сначала сохраните сценарий" in window.party_state.toPlainText()
+        window.party.enabled.setChecked(False)
+        assert expected in window.party_state.toPlainText()
+        assert "Наблюдение выключено" in window.party_state.toPlainText()
+        app.processEvents()
+    finally:
+        window.close()
+
+
+def test_system_chat_panel_is_resizable_and_shows_raw_ocr(monkeypatch):
+    from hid_pilot.chat_preview import ChatPreview
+    import time
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    preview = ChatPreview(time.monotonic(), ("Recharge cannot be used due to unsuitable terms.",), "OCR: распознано")
+    monkeypatch.setattr("hid_pilot.__main__.latest_chat_preview", lambda: preview)
+    first = MainWindow()
+    try:
+        first.show()
+        app.processEvents()
+        first.refresh_system_chat()
+        assert preview.lines[0] in first.system_chat_view.toPlainText()
+        assert first.logs_row.widget(0) is first.journal
+        assert first.logs_row.widget(1) is first.system_chat_view
+        assert first.logs_row.orientation() == Qt.Orientation.Horizontal
+        first.logs_row.setSizes([450, 650])
+        app.processEvents()
+        expected = first.logs_row.sizes()
+    finally:
+        first.close()
+    second = MainWindow()
+    try:
+        second.show()
+        app.processEvents()
+        assert second.logs_row.sizes() == pytest.approx(expected, abs=3)
+    finally:
+        second.close()
+
+
+def test_journal_lines_show_time_without_date(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    monkeypatch.setattr("hid_pilot.__main__.time.strftime", lambda fmt: "14:05:09")
+    window = MainWindow()
+    try:
+        window.journal.clear()
+        window.show_status("Скрипт выполняется\nВторая строка")
+        assert window.journal.toPlainText() == "[14:05:09] Скрипт выполняется\n[14:05:09] Вторая строка"
+        assert window.status.text() == "Скрипт выполняется"
+        app.processEvents()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("failure", [None, "stop", "error", "button", "button_before_start", "manual", "hotkey"])
+def test_script_end_notifies_telegram_once_after_input_cleanup(monkeypatch, tmp_path, failure):
+    from hid_pilot.controller import Stopped
+
+    app = QApplication.instance() or QApplication([])
+    target = Target(hwnd=123, pid=42, title="Тестовое окно", rect=(0, 0, 800, 600))
+    hotkey_factory = Mock(return_value=Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", hotkey_factory)
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [target])
+    monkeypatch.setattr("hid_pilot.__main__.activate", lambda value: value)
+    monkeypatch.setattr("hid_pilot.__main__.Desktop", Mock())
+    monkeypatch.setattr("hid_pilot.__main__.PicoTransport", Mock())
+    controller = Mock()
+    monkeypatch.setattr("hid_pilot.__main__.ActionController", Mock(return_value=controller))
+    runner = Mock()
+    if failure in {"stop", "error"}:
+        runner.run.side_effect = Stopped("STOP") if failure == "stop" else RuntimeError("Ошибка сценария")
+    monkeypatch.setattr("hid_pilot.__main__.Runner", Mock(return_value=runner))
+    window = MainWindow()
+    window.cancel = Mock()
+    window.cancel.wait.return_value = False
+    window.cancel.is_set.return_value = False
+    window.telegram = Mock()
+    window.editor.setPlainText("wait 0.1")
+    window.path = tmp_path / "test.pilot"
+    window.port.setText("COM7")
+    window.silent_button_stop.set()
+    if failure == "button":
+        def stop_from_button(*args):
+            window.stop_from_button()
+            raise Stopped("STOP")
+        runner.run.side_effect = stop_from_button
+    elif failure in {"manual", "hotkey"}:
+        def manual_stop(*args):
+            if failure == "hotkey":
+                hotkey_factory.call_args.args[0]()
+            else:
+                window.stop()
+            raise Stopped("STOP")
+        runner.run.side_effect = manual_stop
+    elif failure == "button_before_start":
+        def cancel_start(seconds):
+            window.stop_from_button()
+            return True
+        window.cancel.wait.side_effect = cancel_start
+    try:
+        window.launch()
+        window.worker.join(timeout=2)
+        assert not window.worker.is_alive()
+        if failure == "button_before_start":
+            controller.close.assert_not_called()
+        else:
+            controller.close.assert_called_once()
+        if failure in {"button", "button_before_start", "manual", "hotkey"}:
+            window.telegram.notify_stopped.assert_not_called()
+            return
+        window.telegram.notify_stopped.assert_called_once()
+        event = window.telegram.notify_stopped.call_args.args[0]
+        assert event.script == "test.pilot" and event.window == target.title
+        assert event.duration >= 0
+        assert ("STOP" if failure == "stop" else "Ошибка сценария" if failure else "завершён") in event.reason
+        app.processEvents()
+    finally:
+        window.close()
+
+
+def test_party_class_region_and_reference_save_with_party_profile():
+    from hid_pilot.party_review import PartyReview
+    from hid_pilot.party import PartyProfile
+    from test_party_class import fixture as class_scene
+
+    app = QApplication.instance() or QApplication([])
+    profile, image, _ = class_scene()
+    original = profile.model_dump_json()
+    dialog = PartyReview(image, profile)
+    try:
+        dialog.field.setCurrentIndex(dialog.field.findData("class_icon"))
+        dialog.select_region(profile.class_icon)
+        assert len(dialog.canvas.boxes) == 40
+        dialog.reference_class.setCurrentText("Shilien Elder")
+        dialog.field.setCurrentIndex(dialog.field.findData("class_reference"))
+        dialog.select_region(profile.box("class_icon", 1))
+        saved = PartyProfile.model_validate_json(dialog.profile().model_dump_json())
+        assert set(saved.class_templates) == {"Elven Elder", "Shilien Elder"}
+        assert saved.class_icon == profile.class_icon
+        assert profile.model_dump_json() == original
+        dialog.save()
+        assert dialog.result() == dialog.DialogCode.Accepted
+        reopened = PartyReview(image, saved)
+        try:
+            assert reopened.profile() == saved
+            reopened.reference_class.setCurrentText("Elven Elder")
+            reopened.clear_class_reference()
+            assert set(reopened.profile().class_templates) == {"Shilien Elder"}
+        finally:
+            reopened.close()
+        app.processEvents()
+    finally:
+        dialog.close()
 
 
 def test_default_panels_match_screenshot_and_restore_user_sizes(monkeypatch):
@@ -167,6 +383,47 @@ def test_target_calibration_saves_type_npc_names_and_death_marker():
         dialog.close()
 
 
+def test_system_chat_manual_region_is_separate_from_resource_numbers(monkeypatch):
+    from PySide6.QtWidgets import QComboBox, QDialog
+    from hid_pilot.auto_review import ReviewCanvas
+    from hid_pilot.bars import BarProfile
+
+    app = QApplication.instance() or QApplication([])
+    image = np.zeros((200, 400, 3), dtype=np.uint8)
+    dialog = AutoReview(image, [], None)
+    box = BarBox(x1=.05, y1=.6, x2=.8, y2=.95)
+
+    def mark_region(inner):
+        mode = inner.findChild(QComboBox)
+        assert mode.currentData() == "system_chat"
+        inner.findChild(ReviewCanvas).selected.emit(box)
+        return QDialog.DialogCode.Accepted
+
+    try:
+        assert not dialog.chat_enabled.isChecked()
+        dialog.chat_enabled.setChecked(True)
+        dialog.save()
+        assert dialog.result() != QDialog.DialogCode.Accepted
+        assert "область сообщений" in dialog.party_error.text()
+        monkeypatch.setattr(QDialog, "exec", mark_region)
+        dialog.edit_own_regions("system_chat")
+        assert dialog.system_chat == box
+        assert "system_chat" not in dialog.boxes
+        assert dialog.canvas.boxes["Системный чат"] == box
+        profile = BarProfile(width=400, height=200, system_chat=dialog.system_chat,
+                             system_chat_enabled=dialog.chat_enabled.isChecked())
+        restored = AutoReview(image, [], None, initial_profile=profile)
+        try:
+            assert restored.system_chat == box
+            assert not restored.chat_enabled.isChecked()
+            assert not restored.chat_enabled.isEnabled()
+        finally:
+            restored.close()
+        app.processEvents()
+    finally:
+        dialog.close()
+
+
 def test_selected_monster_panel_displays_name_hp_and_death(monkeypatch):
     from test_healer import snapshot
     from hid_pilot.target import TargetObservation
@@ -207,6 +464,12 @@ def test_script_party_panel_duplicates_live_state_without_journal_messages(monke
         window.show_observation({"state": snapshot(party=(.5, 1.)), "reason": "Лечение"})
         assert " 1 | 100% |  50% | 100%" in window.party_state.toPlainText()
         assert window.party_state.toPlainText().count("ПАТИ — участников") == 1
+        window.show_observation({"state": state, "reason": "Бафы ЕЕ",
+                                 "buffs": {"@slot1": {"Клара": 600, "РШ": 120}}})
+        assert "Бафы скрипта" in window.party_state.toPlainText()
+        assert "Клара, РШ" in window.party_state.toPlainText()
+        assert "600, 120" in window.party_state.toPlainText()
+        assert window.party.status.text() == window.party_state.toPlainText()
         assert window.log_level.currentText() == "INFO"
         app.processEvents()
     finally:
@@ -364,7 +627,7 @@ def test_party_panel_discards_disabled_and_stale_results(tmp_path):
 
 
 def test_combined_review_save_and_cancel_preserve_correct_profiles(monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QDialog
+    from PySide6.QtWidgets import QCheckBox, QDialog
 
     from hid_pilot.bars import BarProfile
     from hid_pilot.party import PartyProfile
@@ -383,6 +646,9 @@ def test_combined_review_save_and_cancel_preserve_correct_profiles(monkeypatch, 
     party_path.write_text(party.model_dump_json(), "utf-8")
     before = (bar_path.read_bytes(), party_path.read_bytes())
     dialog = Mock(boxes={"cp": box}, target_player_panel=box)
+    dialog.chat_enabled = QCheckBox()
+    dialog.chat_enabled.setChecked(True)
+    dialog.system_chat = box
     dialog.exec.return_value = QDialog.DialogCode.Rejected
     dialog.party_profile.return_value = party
     monkeypatch.setattr("hid_pilot.auto_review.AutoReview", lambda *args, **kwargs: dialog)
@@ -397,6 +663,7 @@ def test_combined_review_save_and_cancel_preserve_correct_profiles(monkeypatch, 
         dialog.exec.return_value = QDialog.DialogCode.Accepted
         window.review_auto_numbers(payload)
         saved = BarProfile.model_validate_json(bar_path.read_text("utf-8"))
+        assert saved.system_chat == box and saved.system_chat_enabled
         assert saved.target_player_panel == box
         assert saved.numbers == {"cp": box}
         assert saved.bars == {}

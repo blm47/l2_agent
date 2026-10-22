@@ -19,6 +19,18 @@ def test_stop_blocks_later_input():
     transport.hold.assert_not_called()
 
 
+def test_one_second_key_hold_is_not_randomized_by_humanize(monkeypatch):
+    transport = Mock(protocol="HID_PILOT_V4")
+    controller = ActionController(Mock(), transport, lambda: True)
+    controller.humanize = True
+    controller.wait = Mock()
+    random_duration = Mock(side_effect=AssertionError("Длительность 1000 мс менять нельзя"))
+    monkeypatch.setattr("hid_pilot.controller.random.randint", random_duration)
+    controller.key("C", 1000)
+    transport.hold.assert_called_once_with("KEY", "C", 1000)
+    random_duration.assert_not_called()
+
+
 def test_focus_failure_blocks_hid():
     desktop = Mock()
     desktop.check.side_effect = RuntimeError("Фокус потерян")

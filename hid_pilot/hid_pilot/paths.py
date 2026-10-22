@@ -24,7 +24,8 @@ def example_scripts_dir() -> Path:
     destination = user_data_dir() / "scripts"
     destination.mkdir(parents=True, exist_ok=True)
     from hid_pilot.extensions import extensions_dir
-    for source in (extensions_dir() / "scripts").glob("*.pilot"):
+    scripts = extensions_dir() / "scripts"
+    for source in (*scripts.glob("*.pilot"), *scripts.glob("*.duo.json")):
         target = destination / source.name
         if not target.exists():
             target.write_bytes(source.read_bytes())

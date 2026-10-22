@@ -48,7 +48,13 @@ def run_self_test(arguments: list[str]) -> int:
             for reference in (command.config, command.prepare, command.run):
                 extension_symbol(reference)
         for path in (extensions_dir() / "scripts").glob("*.pilot"):
-            parse_script(path.read_text("utf-8-sig"))
+            text = path.read_text("utf-8-sig")
+            if path.name.endswith(".duo.pilot"):
+                from hid_pilot.duo import parse_duo_settings
+
+                parse_duo_settings(text)
+            else:
+                parse_script(text)
         checks["scripts"] = "Внешние расширения и сценарии доступны вне EXE"
         reader = NumbersReader()
         image = np.full((60, 280, 3), 20, dtype=np.uint8)

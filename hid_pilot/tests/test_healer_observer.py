@@ -1,11 +1,39 @@
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 
 from hid_pilot.bars import BarBox, BarProfile
 from hid_pilot.healer_observer import HealerReader
 from hid_pilot.numbers import parse_numbers
 from hid_pilot.party import PartyProfile
+
+
+def test_disabled_chat_does_not_require_region_before_start():
+    own, party = profiles()
+    own.system_chat_enabled = True
+    assert HealerReader(own, party).own is own
+
+
+def test_healer_background_loop_feeds_same_frame_to_system_chat(monkeypatch):
+    from hid_pilot.healer_observer import HealerObserver
+    from hid_pilot.target import TargetObservation
+
+    reader = HealerReader(*profiles())
+    reader.auto_refresh = Mock()
+    reader.identities.update = Mock(return_value=TargetObservation(at=10.))
+    observer = HealerObserver(Mock(), reader, .1, lambda: False)
+    image = scene()
+    observer.identity_image = image
+    observer.identity_at = 10.
+    observer.chat.read_chat = Mock()
+    observer.stop_event = Mock()
+    observer.stop_event.is_set.side_effect = [False, True]
+    monkeypatch.setattr("hid_pilot.healer_observer.time.monotonic", lambda: 10.)
+    observer._identity_loop()
+    observer.chat.read_chat.assert_called_once()
+    assert observer.chat.read_chat.call_args.args[0] is image
+    assert observer.chat.read_chat.call_args.args[1] == 10.
 
 
 def profiles():

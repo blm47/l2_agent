@@ -150,7 +150,7 @@ def test_verify_checks_hashes_and_protocol_without_arm_or_input(board, monkeypat
     volume, _serial = board
     for name in FIRMWARE_FILES:
         (volume.root / name).write_bytes(resource_path(f"firmware/{name}").read_bytes())
-    transport = Mock(protocol="HID_PILOT_V4")
+    transport = Mock(protocol="HID_PILOT_V4", firmware_protocol="HID_PILOT_V5")
     transport.command.return_value = "DISARMED"
     factory = Mock(return_value=transport)
     monkeypatch.setattr("hid_pilot.firmware_manager.PicoTransport", factory)

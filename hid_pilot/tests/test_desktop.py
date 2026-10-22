@@ -1,8 +1,9 @@
 from unittest.mock import Mock
 
 import pytest
+import pywintypes
 
-from hid_pilot.desktop import Desktop, FocusLost, Target, activate
+from hid_pilot.desktop import ActivationDenied, Desktop, FocusLost, Target, activate
 
 
 def test_activation_refreshes_geometry_without_changing_identity(monkeypatch):
@@ -13,7 +14,31 @@ def test_activation_refreshes_geometry_without_changing_identity(monkeypatch):
     monkeypatch.setattr("hid_pilot.desktop.win32gui.SetForegroundWindow", focus)
     monkeypatch.setattr("hid_pilot.desktop.win32gui.GetForegroundWindow", lambda: 1)
     assert activate(target) == current
-    focus.assert_called_once_with(1)
+    focus.assert_not_called()
+
+
+def test_activation_accepts_zero_error_if_window_did_become_foreground(monkeypatch):
+    target = Target(hwnd=1, pid=2, title="LU4", rect=(0, 0, 100, 100))
+    monkeypatch.setattr("hid_pilot.desktop.snapshot", lambda _: target)
+    foreground = [3]
+
+    def request(hwnd):
+        foreground[0] = hwnd
+        raise pywintypes.error(0, "SetForegroundWindow", "No error message is available")
+
+    monkeypatch.setattr("hid_pilot.desktop.win32gui.GetForegroundWindow", lambda: foreground[0])
+    monkeypatch.setattr("hid_pilot.desktop.win32gui.SetForegroundWindow", request)
+    assert activate(target) == target
+
+
+def test_activation_reports_denial_with_window_identity(monkeypatch):
+    target = Target(hwnd=1, pid=2, title="LU4", rect=(0, 0, 100, 100))
+    monkeypatch.setattr("hid_pilot.desktop.snapshot", lambda _: target)
+    monkeypatch.setattr("hid_pilot.desktop.win32gui.GetForegroundWindow", lambda: 3)
+    request = Mock(side_effect=pywintypes.error(0, "SetForegroundWindow", "No error message is available"))
+    monkeypatch.setattr("hid_pilot.desktop.win32gui.SetForegroundWindow", request)
+    with pytest.raises(ActivationDenied, match="LU4.*PID 2.*код 0"):
+        activate(target)
 
 
 def test_activation_allows_delayed_focus_but_capture_checks_it(monkeypatch):

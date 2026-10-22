@@ -2,15 +2,17 @@ import logging
 import random
 import threading
 import time
+import win32api
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 import numpy as np
 
-from hid_pilot.desktop import Desktop, FocusLost
+from hid_pilot.desktop import ActivationDenied, Desktop, FocusLost, Target, activate, snapshot
 from hid_pilot.mouse_path import mouse_path
 from hid_pilot.script import KEYS
 from hid_pilot.transport import PicoTransport
+from hid_pilot.window_activation import request_activation
 
 logger = logging.getLogger("hid_pilot.controller")
 
@@ -150,10 +152,121 @@ class ActionController:
             except FocusLost:
                 continue
 
+    def switch_window(self, target: Target, timeout: float = .75) -> None:
+        """
+        Переключает окно общей сессии только после освобождения HID.
+        """
+        if not 0 < timeout <= 1:
+            raise ValueError("Лимит переключения должен быть от 0 до 1 секунды")
+        with self.ready():
+            if target == self.desktop.target:
+                return
+            try:
+                current = snapshot(target.hwnd)
+                if (current.pid, current.rect) != (target.pid, target.rect):
+                    raise RuntimeError("Окно или его геометрия изменились")
+                self.transport.stop()
+                used_helper = False
+
+                def fallback() -> None:
+                    for attempt in range(1, 4):
+                        self.check()
+                        if self.manual_paused.is_set():
+                            raise Stopped("Переключение отменено ручной паузой")
+                        current = snapshot(target.hwnd)
+                        if (current.pid, current.rect) != (target.pid, target.rect):
+                            raise RuntimeError("Окно или его геометрия изменились")
+                        message = f"Активация «{target.title}»: попытка {attempt}/3"
+                        logger.info(message)
+                        self.notify(message)
+                        try:
+                            request_activation(
+                                self.desktop.target, target, self.stopped,
+                                lambda: self.hard_stop_ready() and not self.manual_paused.is_set(), timeout,
+                            )
+                            return
+                        except RuntimeError as exc:
+                            # Отмена и уход пользователя из игры не являются поводом
+                            # перехватывать фокус ещё раз.
+                            self.check()
+                            if self.manual_paused.is_set():
+                                raise Stopped("Переключение отменено ручной паузой") from exc
+                            logger.warning("Попытка активации %s/3 не удалась: %s", attempt, exc)
+                            if attempt == 3:
+                                try:
+                                    self._reset_and_activate(target, timeout)
+                                except RuntimeError as reset_error:
+                                    raise RuntimeError(
+                                        f"Не удалось активировать «{target.title}» после 3 попыток "
+                                        f"и сброса COM/HID-сессии: {reset_error}"
+                                    ) from reset_error
+                                return
+                            self.stopped.wait(.1)
+
+                try:
+                    activate(target)
+                except ActivationDenied:
+                    logger.info("Прямой запрос фокуса отклонён: переключение через изолированный helper")
+                    fallback()
+                    used_helper = True
+                destination = Desktop(target)
+                deadline = time.monotonic() + timeout
+                while True:
+                    if self.stopped.is_set() or not self.hard_stop_ready():
+                        raise Stopped("Переключение остановлено")
+                    try:
+                        destination.check()
+                        break
+                    except FocusLost:
+                        if time.monotonic() >= deadline:
+                            if used_helper:
+                                raise RuntimeError("Не удалось подтвердить фокус второго окна")
+                            fallback()
+                            used_helper = True
+                            deadline = time.monotonic() + timeout
+                        self.stopped.wait(.01)
+                self.desktop = destination
+                self.check()
+                if self.manual_paused.is_set():
+                    self.sync_pause()
+                else:
+                    self.transport.arm()
+                logger.info("Активировано окно %s [PID %s]", target.title, target.pid)
+            except Exception:
+                self.stop()
+                raise
+
     def stop(self) -> None:
         self.stopped.set()
         with self.lock:
             self.transport.stop()
+
+    def _reset_and_activate(self, target: Target, timeout: float) -> None:
+        """
+        Переоткрывает COM/HID без игровых команд, сохраняя состояние сценария.
+        """
+        self.check()
+        if self.manual_paused.is_set():
+            raise Stopped("Сброс сессии отменён ручной паузой")
+        message = "3 отказа активации: сброс COM/HID-сессии Pico без ALT+TAB"
+        logger.info(message)
+        self.notify(message)
+        self.transport.reset_session()
+        self.pause_generation += 1
+        self.check()
+        if self.manual_paused.is_set():
+            raise Stopped("Сброс сессии отменён ручной паузой")
+        self._ensure_alt_released()
+        current = snapshot(target.hwnd)
+        if (current.pid, current.rect) != (target.pid, target.rect):
+            raise RuntimeError("Целевое окно изменилось при сбросе сессии")
+        try:
+            activate(target)
+        except ActivationDenied:
+            request_activation(
+                self.desktop.target, target, self.stopped,
+                lambda: self.hard_stop_ready() and not self.manual_paused.is_set(), timeout,
+            )
 
     def close(self) -> None:
         self.stopped.set()
@@ -161,6 +274,30 @@ class ActionController:
             self.monitor.join(timeout=1)
         with self.lock:
             self.transport.close()
+
+    def _ensure_alt_released(self) -> None:
+        """
+        Подтверждает RELEASE на Pico и отпускание обоих ALT в Windows.
+        """
+        try:
+            self.transport.release()
+            deadline = time.monotonic() + .2
+            while True:
+                if self.stopped.is_set() or self.manual_paused.is_set() or not self.hard_stop_ready():
+                    raise Stopped("Ввод остановлен при отпускании ALT")
+                if not any(win32api.GetAsyncKeyState(key) & 0x8000 for key in (0x12, 0xA4, 0xA5)):
+                    return
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("ALT остаётся зажатым: игровые нажатия заблокированы")
+                self.stopped.wait(.01)
+        except Exception:
+            self.stop()
+            raise
+
+    def _begin_hold(self, kind: str, name: str, duration: int) -> None:
+        self._ensure_alt_released()
+        self.check()
+        self.transport.hold(kind, name, duration)
 
     def wait(self, seconds: float) -> None:
         deadline = self.active_time() + seconds
@@ -322,7 +459,7 @@ class ActionController:
             for key in ("W", "A", "S", "D"):
                 with self.lock:
                     verify()
-                    self.transport.hold("KEY", key, 350)
+                    self._begin_hold("KEY", key, 350)
                 self.wait(.37)
                 with self.lock:
                     self.transport.release()
@@ -331,7 +468,7 @@ class ActionController:
                 with self.lock:
                     verify()
                     self.desktop.check_point(self.desktop.cursor())
-                    self.transport.hold("BUTTON", "right", 800)
+                    self._begin_hold("BUTTON", "right", 800)
                 until = min(deadline, time.monotonic() + .6)
                 while time.monotonic() < until:
                     with self.lock:
@@ -394,14 +531,14 @@ class ActionController:
             if max(abs(a - b) for a, b in zip(current, target)) > 2:
                 raise RuntimeError("Курсор сместился; клик отменён")
             duration = random.randint(70, 130) if self.humanize else 80
-            self.transport.hold("BUTTON", button, duration)
+            self._begin_hold("BUTTON", button, duration)
         self.wait(duration / 1000 + .02)
         with self.ready():
             self.transport.release()
 
     def _hold(self, kind: str, name: str, duration: int) -> None:
         with self.ready():
-            self.transport.hold(kind, name, duration)
+            self._begin_hold(kind, name, duration)
         self.wait(duration / 1000 + 0.02)
         with self.ready():
             self.transport.release()
@@ -412,7 +549,7 @@ class ActionController:
         with self.ready():
             self.desktop.check_point(self.desktop.cursor())
             duration = random.randint(70, 130) if self.humanize else 80
-            self.transport.hold("BUTTON", button, duration)
+            self._begin_hold("BUTTON", button, duration)
         self.wait(duration / 1000 + .02)
         with self.ready():
             self.transport.release()

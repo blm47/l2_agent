@@ -109,12 +109,14 @@ class TrainHealer(Healer):
                 self.policy.mass_cast_finished_at = self.active_cast[1]
                 self.policy.heavy_damage_until.clear()
             if (self.active_cast is not previous_cast and decision.kind == "cast"
-                    and decision.skill in {"battle", "major", "group", "mass_major", "avatar", "balance", "self_rescue", "area_heal"}):
+                    and decision.skill in {"battle", "major", "group", "mass_major", "avatar", "balance", "self_rescue", "circlet_of_heal"}):
                 self.step_after_heal()
         finally:
             self.selecting = None
 
     def step_after_heal(self) -> None:
+        if not self.config.random_movement or time.monotonic() < self.next_random_move:
+            return
         generation = self.controller.pause_generation
         cast_until = self.active_cast[1]
         while True:
@@ -131,10 +133,7 @@ class TrainHealer(Healer):
                 break
             # Ждём завершения каста с проверками STOP, паузы и свежих HP.
             self.controller.wait(min(.05, remaining))
-        key = random.choice(("W", "A", "S", "D"))
-        self.controller.key(key, 1000)
-        self.approach_until = None
-        self.report(f"После хила: {key} на 1 секунду")
+        self.try_random_movement(getattr(self, "run_deadline", float("inf")))
 
     def recover_unknown_state(self, deadline: float) -> None:
         raise RuntimeError("Парик: данные потеряны; восстановительные движения запрещены")

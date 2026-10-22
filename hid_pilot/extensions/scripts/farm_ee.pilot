@@ -1,0 +1,37 @@
+# ЕЕ: поддержка пати. Нужна сохранённая разметка собственных полос и пати.
+set single_key 2
+set mana_key 3
+# Рес имеет наивысший приоритет; откат в секундах.
+set resurrect_key F1
+set resurrect_cooldown 20
+# Автолут короткими сериями в свободное время; false — отключить.
+set auto_loot true
+set loot_key C
+# Кольцо лечения: порог HP, минимум персонажей (включая себя), каст и откат.
+set circlet_of_heal_enabled true
+set circlet_of_heal_key SPACE
+set circlet_of_heal_hp 0.30
+set circlet_of_heal_min_members 3
+set circlet_of_heal_cast 0.5
+set circlet_of_heal_cooldown 24
+# Доли от 0 до 1: 0.20 = 20% HP, 0.30 = 30% MP.
+
+set heal_hp_threshold 0.45
+# Отдельный порог собственного HP; не зависит от HP участников пати.
+set self_heal_hp_threshold 0.75
+set party_mp_threshold 0.45
+set follow_key 7
+set follow_slot 1
+# Случайное W/A/S/D раз в 30–60 секунд: от 0,3 с до лимита текущей прошивки.
+# V4: до 3 с; V3: до 1 с. Для этих изменений перепрошивать Pico не нужно.
+set random_movement true
+set invocation_at_five party
+set invocation_single_cast 1.5
+set invocation_party_cast 1.5
+# Каст бафов не указан: консервативное настраиваемое ожидание 2 секунды.
+set buff_cast 2
+# true — бафать пати сразу; false — начать через 300 секунд. Себя бафать сразу.
+set party_buffs_on_start true
+set max_seconds 36000
+
+farm_ee "farm-bars.json" "party.json"

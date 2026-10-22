@@ -13,6 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
+    single = ROOT / "dist" / "HID_Pilot.exe"
+    portable = ROOT / "dist" / "HID_Pilot_Portable" / "HID_Pilot.exe"
+    if portable.stat().st_size >= single.stat().st_size:
+        raise RuntimeError("Portable содержит однокомпонентный EXE; проверьте коллизию PKG cache")
     destination = ROOT.parent / "artifacts" / "hid-pilot" / "standalone-smoke"
     destination.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()

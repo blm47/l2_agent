@@ -15,14 +15,17 @@ class PicoTransport:
     """
 
     def __init__(self, port: str) -> None:
+        self.port = port
+        self.lock = threading.RLock()
+        self._open_session()
+
+    def _open_session(self) -> None:
         import serial
 
-        self.port = port
         self.sequence = 0
         self.failed = False
         self.last_heartbeat = 0.0
-        self.lock = threading.RLock()
-        self.serial = serial.Serial(port, 115200, timeout=0.1, write_timeout=0.1)
+        self.serial = serial.Serial(self.port, 115200, timeout=0.1, write_timeout=0.1)
         try:
             # Сбрасываем прошлую сессию даже при быстром переоткрытии COM-порта.
             self.serial.dtr = False
@@ -30,11 +33,29 @@ class PicoTransport:
             self.serial.dtr = True
             time.sleep(0.05)
             self.serial.reset_input_buffer()
-            self.protocol = self.command("HELLO", ("HID_PILOT_V4", "HID_PILOT_V3", "HID_PILOT_V2", "HID_PILOT_V1", "L2_PICO_V1"))
+            self.firmware_protocol = self.command("HELLO", ("HID_PILOT_V5", "HID_PILOT_V4", "HID_PILOT_V3", "HID_PILOT_V2", "HID_PILOT_V1", "L2_PICO_V1"))
+            self.supports_alt_tab = self.firmware_protocol == "HID_PILOT_V5"
+            # V5 сохраняет набор обычных команд V4; SWITCH доступен отдельно.
+            self.protocol = "HID_PILOT_V4" if self.supports_alt_tab else self.firmware_protocol
         except Exception:
             self.serial.close()
             raise
-        logger.info("Pico подключён: %s, протокол %s", port, self.protocol)
+        logger.info("Pico подключён: %s, прошивка %s", self.port, self.firmware_protocol)
+
+    def reset_session(self) -> None:
+        with self.lock:
+            try:
+                self.stop()
+            finally:
+                self.serial.close()
+            try:
+                self._open_session()
+                self.command("STATUS", "DISARMED")
+            except Exception:
+                self.failed = True
+                self.serial.close()
+                raise
+            logger.info("COM/HID-сессия Pico сброшена: %s; ввод disarmed", self.port)
 
     def command(self, command: str, expected: str | tuple[str, ...]) -> str:
         with self.lock:
@@ -90,6 +111,8 @@ class PicoTransport:
             if name != "CTRL+A" and name not in {"SHIFT+" + key for key in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}:
                 raise ValueError("Сочетание клавиш запрещено")
         if kind == "KEY":
+            if name in {"ALT", "LALT", "RALT"}:
+                raise ValueError("ALT разрешён только в резервном переключении окон")
             supported = {"L2_PICO_V1": LEGACY_KEYS, "HID_PILOT_V1": V1_KEYS,
                          "HID_PILOT_V2": V2_KEYS, "HID_PILOT_V3": KEYS,
                          "HID_PILOT_V4": KEYS}.get(self.protocol, ())
@@ -102,6 +125,11 @@ class PicoTransport:
 
     def release(self) -> None:
         self.command("RELEASE", "RELEASED")
+
+    def window_switch(self) -> None:
+        if not self.supports_alt_tab:
+            raise ValueError("ALT+TAB требует обновления Pico до HID_PILOT_V5")
+        self.command("SWITCH ALT+TAB 80", "SENT")
 
     def stop(self) -> None:
         if not self.failed:

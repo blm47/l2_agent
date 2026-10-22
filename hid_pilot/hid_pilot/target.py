@@ -107,7 +107,15 @@ class TargetReader:
                                                    "dead": self.death(self.cached.hp, marker)})
             return result
         box = self.profile.target_panel or self.profile.target_player_panel
-        rows = ocr_lines((reader or shared_numbers()).detect(self.profile.crop(image, box)))
+        crop = self.profile.crop(image, box)
+        engine = reader or shared_numbers()
+        line = None
+        if crop.shape[1] >= 3 * crop.shape[0] and crop.shape[0] <= max(32, image.shape[0] * .03):
+            line = engine.read_text(crop)
+        if isinstance(line, tuple) and len(line) == 2:
+            rows = [(0., line[0], line[1])]
+        else:
+            rows = ocr_lines(engine.detect(crop))
         numbers = [parse_numbers(text, score) for _, text, score in rows if "/" in text]
         numbers = [value for value in numbers if value is not None]
         names = [row for row in rows if any(char.isalpha() for char in row[1]) and "/" not in row[1]]

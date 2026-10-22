@@ -3,12 +3,14 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QFontDatabase, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -25,9 +27,14 @@ from PySide6.QtWidgets import (
 )
 
 from hid_pilot.controller import ActionController, Stopped
+from hid_pilot.duo import DuoFarmer, prepare_duo, load_duo_party
+from hid_pilot.duo_panel import DuoPanel
+from hid_pilot.farm_settings import FarmSettings
 from hid_pilot.desktop import Desktop, Target, activate, snapshot, windows
 from hid_pilot.hard_stop import HardStopHotkey
 from hid_pilot.logging_setup import setup_logging
+from hid_pilot.chat_preview import latest_chat_preview
+from hid_pilot.telegram_notifications import PlayerDied, TelegramNotifier, ScriptStopped
 from hid_pilot.loops import KeyLoop, run_key_loops
 from hid_pilot.party_panel import PartyPanel
 from hid_pilot.party_statistics import format_statistics
@@ -35,6 +42,8 @@ from hid_pilot.paths import example_scripts_dir, user_data_dir
 from hid_pilot.quick_panel import QuickPanel
 from hid_pilot.runner import Runner
 from hid_pilot.script import parse_script, script_variables
+from hid_pilot.session import match_session_window
+from hid_pilot.duo import parse_duo_settings
 from hid_pilot.transport import PicoTransport
 
 logger = logging.getLogger("hid_pilot.gui")
@@ -45,17 +54,38 @@ class Events(QObject):
     finished = Signal()
     auto_found = Signal(object)
     observation = Signal(object)
+    duo_observation = Signal(object)
+    duo_statistics = Signal(object)
 
 
 class ScriptNotifications:
-    def __init__(self, events: Events) -> None:
+    def __init__(self, events: Events, telegram: TelegramNotifier | None = None,
+                 script: str = "", window: str = "", duo_mode: bool = False) -> None:
         self.events = events
+        self.telegram = telegram
+        self.script = script
+        self.window = window
+        self.dead = False
+        self.duo_mode = duo_mode
 
     def __call__(self, text: str) -> None:
         self.events.status.emit(text)
 
     def state(self, payload: object) -> None:
-        self.events.observation.emit(payload)
+        if self.duo_mode:
+            self.events.duo_statistics.emit(payload)
+        else:
+            self.events.observation.emit(payload)
+
+    def death(self) -> None:
+        if self.dead:
+            return
+        self.dead = True
+        if self.telegram is not None:
+            self.telegram.notify_death(PlayerDied(self.script, self.window))
+
+    def revived(self) -> None:
+        self.dead = False
 
 
 class MainWindow(QMainWindow):
@@ -70,6 +100,8 @@ class MainWindow(QMainWindow):
         self.controller: ActionController | None = None
         self.worker: threading.Thread | None = None
         self.cancel = threading.Event()
+        self.silent_button_stop = threading.Event()
+        self.telegram = TelegramNotifier(user_data_dir() / "telegram.toml")
         self.auto_busy = False
         self.auto_generation = 0
         self.firmware_open = False
@@ -103,18 +135,29 @@ class MainWindow(QMainWindow):
         self.party = PartyPanel(self.targets.currentData, lambda: self.path,
                                 lambda: self.auto_busy or (self.worker is not None and self.worker.is_alive()))
         self.tabs.addTab(self.party, "Пати")
+        self.duo = DuoPanel(self.targets.currentData,
+                            lambda: self.auto_busy or (self.worker is not None and self.worker.is_alive()),
+                            self.show_status)
+        self.duo.setup_requested.connect(self.setup_duo)
+        self.events.duo_observation.connect(self.duo.show_observation)
+        self.events.duo_statistics.connect(self.duo.show_statistics)
+        self.tabs.addTab(self.duo, "Два окна")
         layout.addWidget(self.tabs, 1)
         self.editor = QPlainTextEdit("# Безопасный первый сценарий без ввода\nwait 1\n")
         self.editor.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
         self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.editor.setMinimumHeight(300)
-        self.party_state = QPlainTextEdit("Ожидание распознавания пати")
+        self.party_state = QPlainTextEdit(format_statistics({}, {}, [], {}, "Ожидание распознавания пати"))
         self.party_state.setReadOnly(True)
         self.party_state.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
         self.party_state.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.party_state.setMinimumWidth(230)
         self.script_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.script_splitter.addWidget(self.editor)
+        self.farm_settings = FarmSettings(self.editor)
+        self.script_settings_tabs = QTabWidget()
+        self.script_settings_tabs.addTab(self.editor, "Текст сценария")
+        self.script_settings_tabs.addTab(self.farm_settings, "Настройки мили-фарма")
+        self.script_splitter.addWidget(self.script_settings_tabs)
         self.script_splitter.addWidget(self.party_state)
         self.script_splitter.setStretchFactor(0, 2)
         self.script_splitter.setStretchFactor(1, 3)
@@ -157,7 +200,7 @@ class MainWindow(QMainWindow):
         pause.clicked.connect(self.toggle_pause)
         row.addWidget(pause)
         stop = QPushButton("STOP")
-        stop.clicked.connect(self.stop)
+        stop.clicked.connect(self.stop_from_button)
         row.addWidget(stop)
         layout.addLayout(row)
         self.status = QLabel("Готово" if self.hotkey.available else self.hotkey.error)
@@ -169,10 +212,26 @@ class MainWindow(QMainWindow):
         self.journal.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.journal.setMaximumBlockCount(500)
         self.journal.setMinimumHeight(60)
+        self.system_chat_view = QPlainTextEdit("Распознавание системного чата временно отключено")
+        self.system_chat_view.setReadOnly(True)
+        self.system_chat_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.system_chat_view.setMaximumBlockCount(100)
+        self.system_chat_view.setMinimumWidth(120)
+        self.system_chat_view.setMinimumHeight(60)
+        self.logs_row = QSplitter(Qt.Orientation.Horizontal)
+        self.logs_row.setChildrenCollapsible(False)
+        self.logs_row.addWidget(self.journal)
+        self.logs_row.addWidget(self.system_chat_view)
+        self.logs_row.setStretchFactor(0, 1)
+        self.logs_row.setStretchFactor(1, 1)
+        self.logs_row.handle(1).setToolTip("Потяните, чтобы изменить ширину журналов")
+        self.chat_timer = QTimer(self)
+        self.chat_timer.timeout.connect(self.refresh_system_chat)
+        self.chat_timer.start(500)
         self.log_splitter = QSplitter(Qt.Orientation.Vertical)
         self.log_splitter.setChildrenCollapsible(False)
         self.log_splitter.addWidget(body)
-        self.log_splitter.addWidget(self.journal)
+        self.log_splitter.addWidget(self.logs_row)
         self.log_splitter.setStretchFactor(0, 2)
         self.log_splitter.setStretchFactor(1, 1)
         self.log_splitter.handle(1).setToolTip("Потяните, чтобы изменить высоту журнала")
@@ -181,6 +240,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Открыть папку примеров скриптов", self.open_examples)
         file_menu.addAction("Открыть папку расширений", self.open_extensions)
         file_menu.addAction("Открыть логи и файлы приложения", self.open_data)
+        file_menu.addAction("Открыть конфиг Telegram", self.open_telegram_config)
         pico_menu = self.menuBar().addMenu("Pico контроллер")
         pico_menu.addAction("Прошивка / сброс / проверка…", self.open_firmware)
         self.refresh()
@@ -193,6 +253,7 @@ class MainWindow(QMainWindow):
         geometry = self.layout_settings.value("geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
+        self.restore_session()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -202,13 +263,22 @@ class MainWindow(QMainWindow):
         # Пропорции скриншота применяем после расчёта размеров видимых панелей.
         for name, splitter, weights in (
                 ("script", self.script_splitter, (2, 3)),
+                ("duo_details", self.duo.details, (2, 3)),
+                ("logs_row", self.logs_row, (1, 1)),
                 ("journal", self.log_splitter, (2, 1))):
             saved = self.layout_settings.value(name)
             if saved is None or not splitter.restoreState(saved):
-                extent = splitter.width() if name == "script" else splitter.height()
+                extent = splitter.width() if splitter.orientation() == Qt.Orientation.Horizontal else splitter.height()
                 splitter.setSizes([extent * weight // sum(weights) for weight in weights])
 
     def save_layout(self) -> None:
+        for key, path in (("solo_script", self.path), ("duo_script", self.duo.path)):
+            if path is not None:
+                self.layout_settings.setValue(f"session/{key}", str(path.resolve()))
+        for role, target in (("farmer", self.targets.currentData()), ("support", self.duo.captured)):
+            if isinstance(target, Target):
+                self.layout_settings.setValue(f"session/{role}", target.model_dump_json())
+        self.layout_settings.setValue("duo_details", self.duo.details.saveState())
         self.layout_settings.setValue("geometry", self.saveGeometry())
         self.layout_settings.setValue("tab", self.tabs.currentIndex())
         self.layout_settings.setValue("port", self.port.text())
@@ -216,9 +286,58 @@ class MainWindow(QMainWindow):
         self.layout_settings.setValue("log_level", self.log_level.currentText())
         self.layout_settings.setValue("script", self.script_splitter.saveState())
         self.layout_settings.setValue("journal", self.log_splitter.saveState())
+        self.layout_settings.setValue("logs_row", self.logs_row.saveState())
         self.layout_settings.sync()
         if self.layout_settings.status() != QSettings.Status.NoError:
             logger.warning("Не удалось сохранить размеры окна и панелей")
+
+    def restore_session(self) -> None:
+        for kind in ("solo", "duo"):
+            value = self.layout_settings.value(f"session/{kind}_script", "", type=str)
+            if not value:
+                continue
+            try:
+                path = Path(value)
+                if path.stat().st_size > 100_000:
+                    raise ValueError("Сценарий слишком большой")
+                text = path.read_text("utf-8-sig")
+                if kind == "duo":
+                    config = parse_duo_settings(text)
+                    self.duo.select_script(path, config, text if not text.lstrip().startswith("{") else None)
+                else:
+                    self.editor.setPlainText(text)
+                    self.path = path
+            except (OSError, ValueError) as exc:
+                self.show_status(f"Не удалось восстановить сценарий {value}: {exc}")
+        available = [self.targets.itemData(index) for index in range(self.targets.count())]
+        saved_roles = {}
+        for role in ("farmer", "support"):
+            value = self.layout_settings.value(f"session/{role}", "", type=str)
+            if value:
+                try:
+                    saved_roles[role] = match_session_window(available, Target.model_validate_json(value))
+                except ValueError:
+                    saved_roles[role] = None
+        lu4 = [target for target in available if target.title.lower().startswith("lu4")]
+        if not saved_roles and len(lu4) == 2:
+            saved_roles = {"farmer": lu4[0], "support": lu4[1]}
+        farmer, support = saved_roles.get("farmer"), saved_roles.get("support")
+        if farmer is not None:
+            for index, target in enumerate(available):
+                if target == farmer:
+                    self.targets.setCurrentIndex(index)
+                    break
+        elif "farmer" in saved_roles:
+            self.targets.setCurrentIndex(-1)
+        if (farmer is not None and support is not None and farmer.hwnd != support.hwnd
+                and farmer in lu4 and support in lu4):
+            for index in range(self.duo.targets.count()):
+                if self.duo.targets.itemData(index) == support:
+                    self.duo.targets.setCurrentIndex(index)
+                    self.duo.capture_second()
+                    break
+        elif saved_roles:
+            self.show_status("Порядок окон не восстановлен однозначно: выберите МА и баффера")
 
     def open_examples(self) -> None:
         os.startfile(example_scripts_dir())
@@ -234,6 +353,13 @@ class MainWindow(QMainWindow):
         directory = user_data_dir()
         directory.mkdir(parents=True, exist_ok=True)
         os.startfile(directory)
+
+    def open_telegram_config(self) -> None:
+        try:
+            os.startfile(self.telegram.config_path)
+        except OSError:
+            logger.warning("Не удалось открыть конфиг Telegram")
+            self.show_status("Откройте telegram.toml в папке файлов приложения")
 
     def open_firmware(self) -> None:
         if self.firmware_open or self.auto_busy or (self.worker is not None and self.worker.is_alive()):
@@ -259,7 +385,18 @@ class MainWindow(QMainWindow):
 
     def show_status(self, text: str) -> None:
         self.status.setText(text.splitlines()[0].strip() if text else "")
-        self.journal.appendPlainText(text)
+        stamp = time.strftime("%H:%M:%S")
+        self.journal.appendPlainText("\n".join(f"[{stamp}] {line}" for line in text.split("\n")))
+
+    def refresh_system_chat(self) -> None:
+        preview = latest_chat_preview()
+        if preview is None:
+            return
+        age = max(0, time.monotonic() - preview.at)
+        status = preview.status if age <= 3 else f"Нет свежего OCR {age:.0f} с; {preview.status}"
+        text = "СИСТЕМНЫЙ ЧАТ\n" + status + "\n\n" + "\n".join(preview.lines)
+        if text != self.system_chat_view.toPlainText():
+            self.system_chat_view.setPlainText(text)
 
     def change_log_level(self, level: str) -> None:
         logging.getLogger("hid_pilot").setLevel(getattr(logging, level))
@@ -274,8 +411,10 @@ class MainWindow(QMainWindow):
                                  {"name": state.selected_name, "class": state.selected_class, "clan": state.selected_clan,
                                   "type": state.target.kind if state.target else None,
                                   "hp": state.target.hp if state.target else None,
+                                  "level": state.target.level if state.target else None,
                                   "dead": state.target.dead if state.target else None},
-                                 list(state.members), payload.get("rates", {}), payload["reason"])
+                                 list(state.members), payload.get("rates", {}), payload["reason"],
+                                 buffs=payload.get("buffs"))
         self.party_state.setPlainText(text)
         self.party.status.setText(text)
 
@@ -319,6 +458,7 @@ class MainWindow(QMainWindow):
                 selected = index
         if selected >= 0:
             self.targets.setCurrentIndex(selected)
+        self.duo.set_windows([self.targets.itemData(index) for index in range(self.targets.count())])
 
     def open_script(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Открыть сценарий", "", "Сценарии (*.pilot)")
@@ -384,18 +524,25 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(350, capture)
 
-    def auto_numbers(self, manual_party: bool = False, manual_stats: bool = False) -> None:
+    def setup_duo(self, role: str, manual_party: bool, manual_stats: bool) -> None:
+        panel = self.duo.panels[role]
+        self.auto_numbers(manual_party, manual_stats, panel)
+
+    def auto_numbers(self, manual_party: bool = False, manual_stats: bool = False,
+                     panel: PartyPanel | None = None) -> None:
         if self.auto_busy or (self.worker is not None and self.worker.is_alive()):
             self.show_status("Перед автопоиском остановите исполнение сценария")
             return
-        if self.path is None:
+        selected_path = panel.path() if panel is not None else self.path
+        if selected_path is None:
             self.show_status("Сначала сохраните сценарий — профиль хранится рядом с ним")
             return
         try:
-            target = self.targets.currentData()
+            target = panel.target() if panel is not None else self.targets.currentData()
             if not isinstance(target, Target):
                 raise TypeError("Выберите окно игры")
             target = activate(target)
+            selected_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             logger.exception("Не удалось начать автопоиск")
             self.show_status(str(exc))
@@ -403,7 +550,8 @@ class MainWindow(QMainWindow):
         self.auto_busy = True
         self.auto_search.setEnabled(False)
         self.auto_generation += 1
-        generation, path, top_only = self.auto_generation, self.path, self.auto_scope.currentData()
+        generation, path, top_only = self.auto_generation, selected_path, self.auto_scope.currentData()
+        context = {"panel": panel} if panel is not None else {}
         self.show_status("Снимок для ручной корректировки пати" if manual_party else
                          "Автопоиск HP/MP/CP, цели и пати: ожидайте окно проверки")
 
@@ -417,12 +565,12 @@ class MainWindow(QMainWindow):
 
             if manual_party:
                 self.review_party({"generation": generation, "image": image,
-                                   "target": target, "path": path})
+                                   "target": target, "path": path, **context})
                 return
             if manual_stats:
                 self.review_auto_numbers({"generation": generation, "image": image,
                                           "target": target, "path": path, "candidates": [],
-                                          "manual_stats": True})
+                                          "manual_stats": True, **context})
                 return
 
             def search() -> None:
@@ -430,7 +578,7 @@ class MainWindow(QMainWindow):
                 from hid_pilot.auto_party import find_party
                 from hid_pilot.auto_player import find_player_panels
                 from hid_pilot.numbers import shared_numbers
-                payload = {"generation": generation, "image": image, "target": target, "path": path}
+                payload = {"generation": generation, "image": image, "target": target, "path": path, **context}
                 try:
                     payload["candidates"] = find_numbers(image, shared_numbers(), top_only)
                     payload["party_candidates"] = find_party(image, shared_numbers())
@@ -447,6 +595,15 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(350, capture)
 
+    def setup_context_matches(self, payload: dict) -> bool:
+        panel = payload.get("panel")
+        if panel is None:
+            return self.path == payload["path"]
+        selected = panel.target()
+        target = payload["target"]
+        return (panel.path() == payload["path"] and isinstance(selected, Target)
+                and (selected.hwnd, selected.pid) == (target.hwnd, target.pid))
+
     def review_party(self, payload: dict) -> None:
         from hid_pilot.party import PartyProfile
         from hid_pilot.party_review import PartyReview
@@ -456,7 +613,7 @@ class MainWindow(QMainWindow):
         try:
             target = payload["target"]
             current = snapshot(target.hwnd)
-            if (current.pid, current.rect) != (target.pid, target.rect) or self.path != payload["path"]:
+            if (current.pid, current.rect) != (target.pid, target.rect) or not self.setup_context_matches(payload):
                 raise RuntimeError("Окно/сценарий изменились — повторите настройку пати")
             path = payload["path"].parent / "party.json"
             image = payload["image"]
@@ -474,11 +631,12 @@ class MainWindow(QMainWindow):
                 self.show_status("Настройка пати отменена; профиль не изменён")
                 return
             current = snapshot(target.hwnd)
-            if (current.pid, current.rect) != (target.pid, target.rect) or self.path != payload["path"]:
+            if (current.pid, current.rect) != (target.pid, target.rect) or not self.setup_context_matches(payload):
                 raise RuntimeError("Окно/сценарий изменились — повторите настройку пати")
             path.write_text(dialog.profile().model_dump_json(indent=2), encoding="utf-8")
-            self.party.enabled.setChecked(False)
-            self.party.reset()
+            panel = payload.get("panel", self.party)
+            panel.enabled.setChecked(False)
+            panel.reset()
             self.show_status("Разметка восьми строк пати сохранена в party.json")
         except Exception as exc:
             logger.exception("Не удалось настроить пати")
@@ -499,7 +657,7 @@ class MainWindow(QMainWindow):
                 raise RuntimeError(payload["error"])
             target = payload["target"]
             current = snapshot(target.hwnd)
-            if (current.pid, current.rect) != (target.pid, target.rect) or self.path != payload["path"]:
+            if (current.pid, current.rect) != (target.pid, target.rect) or not self.setup_context_matches(payload):
                 raise RuntimeError("Окно/сценарий изменились — повторите автопоиск")
             image, candidates = payload["image"], payload["candidates"]
             height, width = image.shape[:2]
@@ -519,9 +677,12 @@ class MainWindow(QMainWindow):
                 self.show_status("Автопоиск отменён; профиль не изменён")
                 return
             current = snapshot(target.hwnd)
-            if (current.pid, current.rect) != (target.pid, target.rect):
+            if (current.pid, current.rect) != (target.pid, target.rect) or not self.setup_context_matches(payload):
                 raise RuntimeError("Геометрия окна изменилась — повторите автопоиск")
             profile.numbers = dialog.boxes.copy()
+            if isinstance(getattr(dialog, "chat_enabled", None), QCheckBox):
+                profile.system_chat = dialog.system_chat
+                profile.system_chat_enabled = dialog.chat_enabled.isChecked()
             level_boxes = getattr(dialog, "level_boxes", {})
             if isinstance(level_boxes, dict):
                 for name, box in level_boxes.items():
@@ -546,8 +707,9 @@ class MainWindow(QMainWindow):
                 party_path.write_text(party.model_dump_json(indent=2), encoding="utf-8")
             elif party_path.exists() and not payload.get("manual_stats"):
                 party_path.unlink()
-            self.party.enabled.setChecked(False)
-            self.party.reset()
+            panel = payload.get("panel", self.party)
+            panel.enabled.setChecked(False)
+            panel.reset()
             profile_path.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
             self.show_status(f"Подтверждены области: {', '.join(dialog.boxes) or 'нет'}; "
                              f"пати: {'да' if party else 'нет'}")
@@ -579,9 +741,10 @@ class MainWindow(QMainWindow):
             return
         if self.worker is not None and self.worker.is_alive():
             return
+        duo_mode = plans is None and self.tabs.currentWidget() is self.duo
         try:
-            script = parse_script(self.editor.toPlainText()) if plans is None else ()
-            variables = script_variables(self.editor.toPlainText()) if plans is None else {}
+            script = parse_script(self.editor.toPlainText()) if plans is None and not duo_mode else ()
+            variables = script_variables(self.editor.toPlainText()) if plans is None and not duo_mode else {}
             base = self.path.parent if self.path else Path.cwd()
             from hid_pilot.extensions import extension_commands, extension_symbol
             extensions = extension_commands()
@@ -600,12 +763,34 @@ class MainWindow(QMainWindow):
             port = self.port.text().strip()
             if not port:
                 raise ValueError("Укажите COM-порт")
-            target = activate(target)
+            if duo_mode:
+                config = self.duo.config()
+                support = self.duo.captured
+                if not isinstance(support, Target):
+                    raise ValueError("Захватите второе окно")
+                current = snapshot(support.hwnd)
+                if (current.pid, current.rect) != (support.pid, support.rect):
+                    raise ValueError("Второе окно изменилось; захватите его заново")
+                # Геометрия первого окна фиксируется на весь совместный запуск.
+                current = snapshot(target.hwnd)
+                if current.pid != target.pid:
+                    raise ValueError("Окно фармера сменило процесс")
+                target = current
+                profile = prepare_duo(self.duo.base(), target, support)
+                party_profile = load_duo_party(self.duo.base(), target)
+            activated = activate(target)
+            if duo_mode and activated.rect != target.rect:
+                raise ValueError("Геометрия окна фармера изменилась; повторите запуск")
+            target = activated
         except Exception as exc:
             logger.exception("Не удалось подготовить запуск")
             self.show_status(str(exc))
             return
         self.cancel.clear()
+        self.silent_button_stop.clear()
+        if duo_mode:
+            self.party.enabled.setChecked(False)
+        self.duo.set_running(True)
         # У хилера собственный observer; второй OCR монитор не должен мешать его tick.
         if plans is None and any(extensions[item.operation].exclusive_observer
                                  for item in script if item.operation in extensions):
@@ -616,8 +801,13 @@ class MainWindow(QMainWindow):
         self.targets.setEnabled(False)
         self.show_status(f"Старт через 1 секунду: {target.title}")
 
+        script_name = self.duo.path.name if duo_mode else "Быстрые клавиши" if plans is not None else (
+            self.path.name if self.path is not None else "Несохранённый сценарий")
+
         def work() -> None:
             transport = None
+            started_at = time.monotonic()
+            stop_reason = "Сценарий завершён"
             try:
                 if self.cancel.wait(1):
                     raise Stopped("Старт отменён")
@@ -628,12 +818,24 @@ class MainWindow(QMainWindow):
                 if self.cancel.is_set():
                     raise Stopped("Старт отменён")
                 self.controller.start()
-                if plans is None:
-                    Runner(self.controller, base, ScriptNotifications(self.events), variables).run(script)
+                if duo_mode:
+                    notifications = ScriptNotifications(self.events, self.telegram, script_name, target.title,
+                                                        duo_mode=True)
+                    duo_farmer = DuoFarmer(self.controller, target, support, profile, config, notifications,
+                                           self.events.duo_observation.emit, party_profile=party_profile)
+                    try:
+                        duo_farmer.setup_observation(self.duo.base() / "farmer")
+                        duo_farmer.run()
+                    finally:
+                        duo_farmer.close_observation()
+                elif plans is None:
+                    notifications = ScriptNotifications(self.events, self.telegram, script_name, target.title)
+                    Runner(self.controller, base, notifications, variables).run(script)
                 else:
                     run_key_loops(self.controller, plans, cancelled, self.events.status.emit)
                 self.events.status.emit("Сценарий завершён")
             except Exception as exc:
+                stop_reason = f"Остановлено: {exc}"
                 logger.exception("Сценарий остановлен")
                 self.events.status.emit(f"Остановлено: {exc}")
             finally:
@@ -643,39 +845,54 @@ class MainWindow(QMainWindow):
                     elif transport is not None:
                         transport.close()
                 except Exception as exc:
+                    stop_reason += f"; ошибка освобождения HID: {exc}"
                     logger.exception("Ошибка освобождения HID")
                     self.events.status.emit(f"Ошибка отключения: {exc}")
                 self.controller = None
+                if not self.silent_button_stop.is_set():
+                    self.telegram.notify_stopped(ScriptStopped(script_name, target.title, stop_reason,
+                                                               time.monotonic() - started_at))
                 self.events.finished.emit()
 
         self.worker = threading.Thread(target=work, name="ScriptRunner", daemon=True)
         self.worker.start()
 
+    def stop_from_button(self) -> None:
+        self.stop()
+
     def stop(self) -> None:
+        # Ручной STOP, hard-stop и закрытие GUI не отправляют уведомление Telegram.
+        self.silent_button_stop.set()
         self.cancel.set()
         controller = self.controller
         if controller is not None:
-            try:
-                controller.stop()
-            except Exception:
-                logger.exception("Ошибка STOP; действует watchdog платы")
+            if controller.stopped.is_set():
+                return
+            # Отменяем выполнение сразу, а lock и ответ Pico ждём вне GUI и hard-stop.
+            controller.stopped.set()
+
+            def stop_input() -> None:
+                try:
+                    controller.stop()
+                except Exception:
+                    logger.exception("Ошибка STOP; действует watchdog платы")
+
+            threading.Thread(target=stop_input, name="StopInput", daemon=True).start()
 
     def toggle_pause(self) -> None:
         controller = self.controller
-        if controller is None:
+        if controller is None or controller.stopped.is_set():
             return
-        try:
-            if controller.manual_paused.is_set():
-                controller.resume()
-                self.events.status.emit("Ручная пауза снята; продолжение при активации окна игры")
-            else:
-                controller.pause()
-                self.events.status.emit("PAUSE — вручную; для продолжения нажмите кнопку ещё раз")
-        except Exception as exc:
-            logger.exception("Не удалось переключить паузу")
-            self.events.status.emit(str(exc))
+        # Watchdog применяет запрос под lock; GUI не ждёт текущую HID/CV-операцию.
+        if controller.manual_paused.is_set():
+            controller.manual_paused.clear()
+            self.events.status.emit("Ручная пауза снята; продолжение при активации окна игры")
+        else:
+            controller.manual_paused.set()
+            self.events.status.emit("Запрошена PAUSE — вручную; для продолжения нажмите кнопку ещё раз")
 
     def finished(self) -> None:
+        self.duo.set_running(False)
         self.start_button.setEnabled(True)
         self.targets.setEnabled(True)
         self.quick.set_running(None)
@@ -687,7 +904,7 @@ class MainWindow(QMainWindow):
             return
         self.auto_generation += 1
         self.stop()
-        if not self.party.shutdown():
+        if not self.party.shutdown() or not self.duo.shutdown():
             self.show_status("Ожидание завершения OCR пати; повторите закрытие")
             event.ignore()
             return

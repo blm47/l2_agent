@@ -76,6 +76,73 @@ def test_unknown_firmware_rejected_before_arm(monkeypatch):
     serial.close.assert_called()
 
 
+def test_v5_normalizes_game_protocol_and_enables_separate_switch(monkeypatch):
+    serial = Mock()
+    serial.write.side_effect = len
+    serial.read_until.side_effect = [b"1 OK HID_PILOT_V5\n", b"2 OK SENT\n"]
+    monkeypatch.setattr("serial.Serial", lambda *a, **k: serial)
+    monkeypatch.setattr("hid_pilot.transport.time.sleep", lambda _: None)
+    transport = PicoTransport("COM99")
+    assert transport.protocol == "HID_PILOT_V4"
+    assert transport.firmware_protocol == "HID_PILOT_V5"
+    transport.window_switch()
+    serial.write.assert_called_with(b"2 SWITCH ALT+TAB 80\n")
+
+
+def test_old_firmware_cannot_send_switch():
+    transport = PicoTransport.__new__(PicoTransport)
+    transport.supports_alt_tab = False
+    transport.command = Mock()
+    with pytest.raises(ValueError, match="V5"):
+        transport.window_switch()
+    transport.command.assert_not_called()
+
+
+@pytest.mark.parametrize("key", ["ALT", "LALT", "RALT"])
+def test_transport_rejects_standalone_alt_before_serial(key):
+    transport = PicoTransport.__new__(PicoTransport)
+    transport.protocol = "HID_PILOT_V4"
+    transport.command = Mock()
+    with pytest.raises(ValueError, match="ALT разрешён только"):
+        transport.hold("KEY", key, 80)
+    transport.command.assert_not_called()
+
+
+def test_session_reset_closes_old_port_and_handshakes_disarmed_without_input(monkeypatch):
+    old_serial, new_serial = Mock(), Mock()
+    old_serial.write.side_effect = len
+    new_serial.write.side_effect = len
+    old_serial.read_until.side_effect = [b"1 OK HID_PILOT_V5\n", b"2 OK STOPPED\n"]
+    new_serial.read_until.side_effect = [b"1 OK HID_PILOT_V5\n", b"2 OK DISARMED\n"]
+    factory = Mock(side_effect=[old_serial, new_serial])
+    monkeypatch.setattr("serial.Serial", factory)
+    monkeypatch.setattr("hid_pilot.transport.time.sleep", lambda _: None)
+    transport = PicoTransport("COM99")
+    transport.reset_session()
+    old_serial.close.assert_called_once()
+    assert transport.serial is new_serial
+    assert transport.sequence == 2
+    assert not transport.failed
+    assert [call.args[0] for call in old_serial.write.call_args_list] == [b"1 HELLO\n", b"2 STOP\n"]
+    assert [call.args[0] for call in new_serial.write.call_args_list] == [b"1 HELLO\n", b"2 STATUS\n"]
+
+
+def test_failed_reset_closes_new_port_and_keeps_transport_blocked(monkeypatch):
+    old_serial, new_serial = Mock(), Mock()
+    old_serial.write.side_effect = len
+    new_serial.write.side_effect = len
+    old_serial.read_until.side_effect = [b"1 OK HID_PILOT_V5\n", b"2 OK STOPPED\n"]
+    new_serial.read_until.return_value = b"1 ERR REJECTED\n"
+    monkeypatch.setattr("serial.Serial", Mock(side_effect=[old_serial, new_serial]))
+    monkeypatch.setattr("hid_pilot.transport.time.sleep", lambda _: None)
+    transport = PicoTransport("COM99")
+    with pytest.raises(OSError):
+        transport.reset_session()
+    assert transport.failed
+    new_serial.close.assert_called()
+    assert [call.args[0] for call in new_serial.write.call_args_list] == [b"1 HELLO\n"]
+
+
 @pytest.mark.parametrize("protocol", ["L2_PICO_V1", "HID_PILOT_V1"])
 @pytest.mark.parametrize("key", ["-", "NUM7"])
 def test_old_firmware_rejects_new_keys_before_command(protocol, key):

@@ -2,29 +2,72 @@
 # Перед запуском настройте свои статы, HP цели и панель имени монстра.
 set next_target 6
 set attack 3
+# Повтор кнопки атаки по живой цели каждые 1,5 секунды.
+set attack_delay 1.2
 set loot C
 set heal F2
 set rest =
+set stand -
+# Сесть на реген при низком HP/MP: включается только явно.
+set regen_enabled false
+# После выбора живой цели сначала подбирать лут 1 секунду, затем атаковать.
+set pre_attack_loot true
 set humanize true
-set approach_delay 5
+set approach_delay 11
 set target_verify_seconds 2
-set quiet_seconds 3
-set loot_hold 1.5
+set quiet_seconds 2.5
+set loot_hold 1.0
 set search_moves 3
+set search_cycles 30
+# Пять неудачных атак по одному имени: выход W/A или S/D, 20–30 удержаний по 1,5 с.
+# Урон по себе или другая цель прерывают выход; перед второй попыткой — сесть/встать.
 # Списки клавиш через запятую; пустой список отключает дополнительные скиллы.
 # Пример: set damage_keys "F1,F2" и set overhit_keys "F3,F4".
 set damage_keys "3"
-set overhit_keys "2"
+set overhit_keys "1"
+
+# true — overhit-скиллы также используются в обычном бою по откату; false — только добивание.
+set overhit_during_combat false
 set damage_interval 3
-set overhit_interval 5
+# Откат overhit на клавише 1 — 3 секунды; клавиша 2 используется для агра.
+set overhit_interval 3
+set overhit_hold_ms 700
+set overhit_early_chance 0.99
 # Добивать при HP не выше 115% среднего обычного удара.
-set overhit_margin 1.15
-set hp_threshold 0.20
+set overhit_margin 1.99
+# При HP до 2% добивать overhit даже без имени и накопленной оценки урона.
+set overhit_hp_threshold 0.10
+
+# Пьем хилку при пороге
+set hp_threshold 0.70
 # HP ниже 25%: проверить 3 секунды без урона и сесть; при уроне добить агрессора.
 set hp_rest_threshold 0.25
 set hp_resume 0.90
 set mp_threshold 0.10
-set mp_resume 0.90
-set max_seconds 360000
+set mp_resume 0.50
+# Общий лимит восстановления HP/MP — 3 минуты.
+set rest_timeout 360
+set max_hours 10
 set cycles 10000
+
+# Три селф/пати-баффа: пустая кнопка отключает слот.
+set buff1_key "NUM9"
+set buff_delay_minutes 5
+set aggro_key "2"
+set buff1_rebuff_minutes 19
+set buff1_cast_seconds 2
+set buff2_key "NUM0"
+set buff2_rebuff_minutes 19
+set buff2_cast_seconds 5
+set buff3_key ""
+set buff3_rebuff_minutes 19
+set buff3_cast_seconds 1
+
+# Вампирик: HP монстра >50%, своё HP ниже порога (0.5 = 50%).
+# Зелье остаётся на heal со своим hp_threshold и heal_delay.
+set vampiric_key ""
+set vampiric_hp_threshold 0.5
+set vampiric_cast_seconds 1
+set vampiric_cooldown 5
+
 farm_melee "farm-bars.json"

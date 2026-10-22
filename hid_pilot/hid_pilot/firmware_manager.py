@@ -22,7 +22,7 @@ logger = logging.getLogger("hid_pilot.firmware")
 BOARDS = {"raspberry_pi_pico": "Raspberry Pi Pico (RP2040)",
           "raspberry_pi_pico_w": "Raspberry Pi Pico W (RP2040)"}
 FIRMWARE_FILES = ("control.py", "boot.py", "code.py")
-PROTOCOL = "HID_PILOT_V4"
+PROTOCOL = "HID_PILOT_V5"
 RP2040_FAMILY = 0xE48BFF56
 
 
@@ -187,9 +187,9 @@ def install_scripts(volume: PicoVolume, notify: Callable[[str], None],
             path.replace(root / name)
             if (root / name).read_bytes() != payloads[name]:
                 raise OSError(f"Checksum {name} на Pico не совпадает")
-        notify("HID_PILOT_V4 записана и файлы проверены. Безопасно извлеките CIRCUITPY, "
+        notify("HID_PILOT_V5 записана и файлы проверены. Безопасно извлеките CIRCUITPY, "
                "переподключите Pico без BOOTSEL и нажмите «Проверить прошивку».")
-        logger.info("Файлы HID_PILOT_V4 установлены: %s", volume.root)
+        logger.info("Файлы HID_PILOT_V5 установлены: %s", volume.root)
     except Exception:
         logger.exception("Установка Pico прервана; резервная копия: %s", backup)
         notify(f"Установка прервана. Резервная копия: {backup}. Проверьте плату перед запуском.")
@@ -241,10 +241,10 @@ def verify_firmware(volume: PicoVolume | None, port: str = "") -> tuple[str, str
         try:
             transport = PicoTransport(candidate)
             state = transport.command("STATUS", "DISARMED")
-            if transport.protocol != PROTOCOL:
-                raise ValueError(f"Версия {transport.protocol}; нужна {PROTOCOL}")
+            if transport.firmware_protocol != PROTOCOL:
+                raise ValueError(f"Версия {transport.firmware_protocol}; нужна {PROTOCOL}")
             scope = "SHA256 файлов + " if volume else ""
-            return candidate, f"Проверено: {scope}HELLO {transport.protocol}, STATUS {state}; порт {candidate}"
+            return candidate, f"Проверено: {scope}HELLO {transport.firmware_protocol}, STATUS {state}; порт {candidate}"
         except (OSError, ValueError) as exc:
             errors.append(f"{candidate}: {exc}")
         finally:

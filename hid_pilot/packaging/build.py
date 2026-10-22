@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def collect_licenses() -> None:
     destination = ROOT / "packaging" / "licenses"
     destination.mkdir(parents=True, exist_ok=True)
-    lines = ["HID Pilot 0.3.1 — bundled third-party components", "",
+    lines = ["HID Pilot 0.5.0 — bundled third-party components", "",
              "CircuitPython: https://github.com/adafruit/circuitpython/tree/10.3.1",
              "RP2040 flash nuke: https://github.com/raspberrypi/pico-examples/tree/master/flash/nuke",
              "Qt / PySide6: LGPLv3 / GPLv3 / commercial; license files are included.",
@@ -54,29 +54,41 @@ def main() -> int:
                     "--distpath", str(ROOT / "dist"), "--workpath", str(ROOT / "build"),
                     str(ROOT / "packaging" / "HID_Pilot.spec")], check=True)
     dist = ROOT / "dist"
+    # Пересоздаём только генерируемые каталоги поставки, чтобы не оставлять удалённые профили.
+    for name in ("extensions", "HID_Pilot_Full"):
+        generated = (dist / name).resolve()
+        if generated.parent != dist.resolve():
+            raise RuntimeError("Каталог поставки вышел за пределы dist")
+        if generated.exists():
+            shutil.rmtree(generated)
     shutil.copyfile(ROOT / "packaging" / "QUICKSTART.txt", dist / "QUICKSTART.txt")
     shutil.copyfile(ROOT / "packaging" / "THIRD_PARTY_NOTICES.txt", dist / "THIRD_PARTY_NOTICES.txt")
     portable = dist / "HID_Pilot_Portable"
+    (portable / "HID_Pilot_Portable.exe").replace(portable / "HID_Pilot.exe")
     shutil.copytree(ROOT / "extensions", dist / "extensions", dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.sqlite3*",
+                                                  "*-cooldowns.json", "*-cooldowns.tmp", "*.log",
+                                                  "backup__*", "*.7z", "*.zip"))
     shutil.copytree(dist / "extensions", portable / "extensions", dirs_exist_ok=True)
-    shutil.make_archive(str(dist / "HID_Pilot_Extensions-0.3.1"), "zip", dist, "extensions")
+    shutil.make_archive(str(dist / "HID_Pilot_Extensions-0.5.0"), "zip", dist, "extensions")
     shutil.copyfile(ROOT / "packaging" / "QUICKSTART.txt", portable / "QUICKSTART.txt")
-    shutil.make_archive(str(dist / "HID_Pilot_Portable-0.3.1"), "zip", dist, portable.name)
+    shutil.make_archive(str(dist / "HID_Pilot_Portable-0.5.0"), "zip", dist, portable.name)
     full = dist / "HID_Pilot_Full"
     full.mkdir(parents=True, exist_ok=True)
     for name in ("HID_Pilot.exe", "QUICKSTART.txt", "THIRD_PARTY_NOTICES.txt"):
         shutil.copyfile(dist / name, full / name)
     shutil.copytree(dist / "extensions", full / "extensions", dirs_exist_ok=True)
-    for name in ("README.md", "HEALER.md", "TRAIN_HEALER.md", "DECISIONS.md", "RELEASE_NOTES.md"):
+    for name in ("README.md", "HEALER.md", "TRAIN_HEALER.md", "DECISIONS.md", "RELEASE_NOTES.md",
+                 "DUO.md", "MELEE_SKILLS.md", "TELEGRAM.md", "RESURRECTION.md",
+                 "SYSTEM_CHAT.md", "PARTY_CLASSES.md"):
         shutil.copyfile(ROOT / name, full / name)
     shutil.copytree(ROOT / "packaging" / "licenses", full / "licenses", dirs_exist_ok=True)
     shutil.copytree(ROOT / "firmware", full / "firmware", dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    shutil.make_archive(str(dist / "HID_Pilot_Full-0.3.1"), "zip", dist, full.name)
+    shutil.make_archive(str(dist / "HID_Pilot_Full-0.5.0"), "zip", dist, full.name)
     hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-              for path in (dist / "HID_Pilot.exe", dist / "HID_Pilot_Portable-0.3.1.zip",
-                           dist / "HID_Pilot_Extensions-0.3.1.zip", dist / "HID_Pilot_Full-0.3.1.zip")}
+              for path in (dist / "HID_Pilot.exe", dist / "HID_Pilot_Portable-0.5.0.zip",
+                           dist / "HID_Pilot_Extensions-0.5.0.zip", dist / "HID_Pilot_Full-0.5.0.zip")}
     (dist / "SHA256.json").write_text(json.dumps(hashes, indent=2), "utf-8")
     return 0
 

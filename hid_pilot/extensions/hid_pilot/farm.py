@@ -3,11 +3,13 @@
 """
 
 import logging
+import math
 import random
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from hid_pilot.bars import BarProfile
@@ -17,6 +19,7 @@ from hid_pilot.monster_catalogue import MonsterCatalogue
 from hid_pilot.party import PartyProfile, read_party
 from hid_pilot.party_statistics import format_statistics
 from hid_pilot.paths import user_data_dir
+from hid_pilot.resurrection import wait_for_resurrection
 from hid_pilot.script import KEYS
 from hid_pilot.target import TargetReader
 
@@ -27,6 +30,18 @@ def prepare_extension(base: Path, args: tuple[str, ...]) -> None:
     profile = BarProfile.model_validate_json((base / args[0]).read_text("utf-8"))
     if not {"hp", "mp", "target_hp"} <= profile.bars.keys() | profile.numbers.keys():
         raise ValueError("Сначала настройте Моё HP, Моё MP и HP цели")
+    if (profile.numbers or profile.target_panel or profile.target_player_panel
+            or profile.target_level or profile.own_level or (base / "party.json").exists()):
+        # Импорт и загрузка OCR могут задержать heartbeat; готовим их до подключения и ARM Pico.
+        from hid_pilot.numbers import shared_numbers
+
+        logger.info("Подготовка OCR фарма перед подключением Pico")
+        shared_numbers().prepare()
+        if (profile.target_panel or profile.target_player_panel or profile.target_level
+                or profile.own_level or (base / "party.json").exists()):
+            from hid_pilot.farm_observer import background_numbers
+
+            background_numbers().prepare()
 
 
 def run_extension(controller: ActionController, base: Path, args: tuple[str, ...],
@@ -51,6 +66,7 @@ class ReacquireTarget(Exception):
 class FarmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     humanize: bool = True
+    random_movement: bool = False
     next_target: str = "3"
     attack: str = "R"
     melee: str = "4"
@@ -80,7 +96,23 @@ class FarmConfig(BaseModel):
     observation_movement: bool = True
     heal_attempts: int = Field(default=5, ge=1, le=20)
     cycles: int = Field(default=1000, ge=1, le=10000)
-    max_seconds: float = Field(default=36000, ge=1, le=360000)
+    max_seconds: float = Field(default=10800, ge=1, le=360000)
+    max_hours: float = Field(default=3, gt=0, le=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def duration_in_hours(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        values = data.copy()
+        if "max_hours" in values:
+            seconds = float(values["max_hours"]) * 3600
+            if "max_seconds" in values and not math.isclose(float(values["max_seconds"]), seconds):
+                raise ValueError("max_hours и max_seconds задают разное время; оставьте один параметр")
+            values["max_seconds"] = seconds
+        elif "max_seconds" in values:
+            values["max_hours"] = float(values["max_seconds"]) / 3600
+        return values
 
     @field_validator("next_target", "attack", "melee", "loot", "heal", "rest")
     @classmethod
@@ -113,6 +145,7 @@ class Farmer:
         self.notify = notify
         self.clock = controller.active_time if clock is time.monotonic else clock
         self.deadline = self.clock() + config.max_seconds
+        self.next_random_move = self.clock() + random.uniform(30, 60)
         self.sitting = False
         self.target_pending = False
         self.observation_details: dict[str, str] = {}
@@ -200,7 +233,11 @@ class Farmer:
             logger.debug("Чтение HP/MP заняло больше секунды; повторяем на свежем кадре")
             return None, None, None
         if hp == 0:
-            raise RuntimeError("Собственное HP = 0; фарм остановлен")
+            self.sitting = False
+            self.target_pending = False
+            self.invalidate_target()
+            wait_for_resurrection(self.controller, self.profile, self.deadline, self.notify, self.clock)
+            return self._observe()
         if self.target_reader is not None:
             if self.identity_cache is not None:
                 if generation != self.observation_generation:
@@ -234,7 +271,16 @@ class Farmer:
             selected = self.last_target.model_dump() if self.last_target is not None else {"hp": target}
             self.display_data = ({"hp": hp, "mp": mp, "cp": self.own_cp, "level": level}, selected, members)
             self.publish_statistics()
+        if generation != self.controller.pause_generation:
+            return None, None, None
+        self.on_observation(image, hp, mp, target)
         return hp, mp, target
+
+    def on_observation(self, image: np.ndarray, hp: float | None,
+                       mp: float | None, target: float | None) -> None:
+        """
+        Позволяет расширению обработать тот же свежий кадр без повторного capture.
+        """
 
     def publish_statistics(self) -> None:
         if self.display_data is None:
@@ -329,11 +375,32 @@ class Farmer:
     def run(self) -> None:
         for cycle in range(self.config.cycles):
             self.care()
+            self.try_random_movement()
             self.report(f"Цикл {cycle + 1}: next_target")
             try:
                 self.fight()
             except ReacquireTarget:
                 self.report("После лечения/отдыха выбираем цель заново")
+
+    def try_random_movement(self) -> bool:
+        if not self.config.random_movement or self.clock() < self.next_random_move or self.sitting:
+            return False
+        generation = self.controller.pause_generation
+        hp, mp, _ = self.observe()
+        if hp is None or mp is None or hp < self.config.hp_threshold or mp < self.config.mp_threshold:
+            return False
+        if generation != self.controller.pause_generation:
+            self.next_random_move = self.clock() + random.uniform(30, 60)
+            return False
+        duration = random.randint(300, 3000 if self.controller.transport.protocol == "HID_PILOT_V4" else 1000)
+        if self.clock() + duration / 1000 + .02 > self.deadline:
+            return False
+        key = random.choice(("W", "A", "S", "D"))
+        self.controller.key(key, duration)
+        self.next_random_move = self.clock() + random.uniform(30, 60)
+        self.invalidate_target()
+        self.report(f"Случайное движение: {key}, {duration} мс")
+        return True
 
     def fight(self) -> None:
         target = None

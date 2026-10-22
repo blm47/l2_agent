@@ -1,3 +1,5 @@
+import pytest
+
 from hid_pilot.mob_statistics import MobStatistics
 from hid_pilot.target import TargetObservation
 
@@ -60,7 +62,36 @@ def test_report_once_a_minute_contains_names_counts_and_elapsed_time(caplog):
     assert stats.report(59.) is None
     with caplog.at_level("INFO", logger="hid_pilot.mob_statistics"):
         summary = stats.report(60.)
-    assert "всего 2" in summary and "Gremlin ×1" in summary and "Wolf ×1" in summary
-    assert "время 1:00" in summary and len(caplog.records) == 1
+    assert "всего 2" in summary and "\n1. 1 — Gremlin\n2. 1 — Wolf" in summary
+    assert "время 00:01:00" in summary and len(caplog.records) == 1
     assert stats.report(61.) is None
     assert "последний интервал 0" in stats.report(120.)
+
+
+def test_ranked_statistics_include_all_names_in_separate_numbered_rows():
+    stats = MobStatistics(0.)
+    for index in range(12):
+        stats.record_kill(f"Mob {index:02d}")
+    stats.record_kill("Wolf")
+    stats.record_kill("Wolf")
+    stats.record_kill("Gremlin")
+    stats.record_kill("Gremlin")
+    expected = ["1. 2 — Gremlin", "2. 2 — Wolf"]
+    expected += [f"{index + 3}. 1 — Mob {index:02d}" for index in range(12)]
+    assert stats.summary(60.).splitlines()[1:] == expected
+    assert stats.report(60.).splitlines()[1:] == expected
+
+
+def test_empty_statistics_show_no_kills():
+    stats = MobStatistics(0.)
+    assert stats.summary(0.).endswith("подтверждено убийств: 0\nнет")
+
+
+@pytest.mark.parametrize("elapsed, expected", [(0, "00:00:00"), (59, "00:00:59"),
+                                               (60, "00:01:00"), (3600, "01:00:00"),
+                                               (17999, "04:59:59"), (90061, "25:01:01")])
+def test_farm_duration_uses_hours_minutes_seconds(elapsed, expected):
+    stats = MobStatistics(100.)
+    assert stats.summary(100. + elapsed).startswith(f"ФАРМ — {expected};")
+    if elapsed >= 60:
+        assert f"время {expected}\n" in stats.report(100. + elapsed)

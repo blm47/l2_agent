@@ -26,7 +26,13 @@ class Runner:
         self.found_at = 0.0
         self.steps = 0
         self.variables = variables or {}
-        self.max_seconds = number(self.variables.get("max_seconds", "36000"), 1, 360000)
+        if "max_hours" in self.variables:
+            self.max_seconds = number(self.variables["max_hours"], 1 / 3600, 100) * 3600
+            if "max_seconds" in self.variables and not np.isclose(
+                    self.max_seconds, number(self.variables["max_seconds"], 1, 360000)):
+                raise ValueError("max_hours и max_seconds задают разное время; оставьте один параметр")
+        else:
+            self.max_seconds = number(self.variables.get("max_seconds", "36000"), 1, 360000)
         self.deadline = time.monotonic() + self.max_seconds
         self.extensions = extension_commands()
 

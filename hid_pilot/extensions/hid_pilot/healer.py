@@ -14,7 +14,7 @@ from hid_pilot.party import PartyMember
 from hid_pilot.target import TargetObservation
 from hid_pilot.script import KEYS
 
-Skill = Literal["balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2", "self_rescue", "area_heal"]
+Skill = Literal["balance", "battle", "major", "mass_major", "group", "avatar", "invocation", "recharge", "purify", "mp_buff", "mp_buff2", "self_rescue", "circlet_of_heal"]
 logger = logging.getLogger("hid_pilot.healer")
 
 
@@ -28,6 +28,13 @@ class HealerConfig(BaseModel):
     cancel_unneeded_casts: bool = False
     heal_press_interval: float = Field(default=.15, ge=.1, le=1)
     humanize: bool = True
+    random_movement: bool = False
+    circlet_of_heal_enabled: bool = False
+    circlet_of_heal_key: str = "SPACE"
+    circlet_of_heal_hp: float = Field(default=.35, gt=0, le=1)
+    circlet_of_heal_min_members: int = Field(default=1, ge=1, le=9)
+    circlet_of_heal_cast: float = Field(default=.4, gt=0, le=30)
+    circlet_of_heal_cooldown: float = Field(default=25, gt=0, le=3600)
     auto_loot: bool = True
     loot_key: str = "C"
     cursor_jitter: float = Field(default=.15, ge=0, le=.15)
@@ -111,7 +118,7 @@ class HealerConfig(BaseModel):
     regular_cooldown: float = Field(default=2, ge=.1, le=60)
 
     @field_validator("balance_key", "battle_key", "major_key", "mass_major_key", "group_key",
-                     "avatar_key", "invocation_key", "recharge_key", "self_key", "purify_key", "follow_key", "mp_buff_key", "mp_buff2_key", "stun_probe_key", "loot_key", "self_rescue_key", "aura_key")
+                     "avatar_key", "invocation_key", "recharge_key", "self_key", "purify_key", "follow_key", "mp_buff_key", "mp_buff2_key", "stun_probe_key", "loot_key", "self_rescue_key", "aura_key", "circlet_of_heal_key")
     @classmethod
     def allowed_key(cls, value: str | None) -> str | None:
         if value is not None and value not in KEYS:
@@ -475,6 +482,11 @@ class HealPolicy:
     def emergency_slots(self, now: float) -> tuple[int, ...]:
         return tuple(sorted(slot for slot, since in self.hp_missing_since.items() if now - since >= 15))
 
+    def circlet_of_heal_needed(self, state: HealerSnapshot) -> bool:
+        return (self.config.circlet_of_heal_enabled
+                and sum(0 < hp <= self.config.circlet_of_heal_hp for hp in state.health().values())
+                >= self.config.circlet_of_heal_min_members)
+
     def recovery_decision(self, state: HealerSnapshot, now: float) -> HealDecision:
         follow = self.emergency_follow(state, now)
         if follow is not None:
@@ -555,6 +567,9 @@ class HealPolicy:
         health = state.health()
         can_heal = state.mp >= cfg.minimum_cast_mp
         all_known = self.health_complete(state)
+        if (can_heal and self.circlet_of_heal_needed(state) and now < self.ready_at.get("balance", 0)
+                and self.ready("circlet_of_heal", now)):
+            return self.cast("circlet_of_heal", "Кольцо лечения: низкое HP, баланс в откате")
         fast_losses = [name for name, hp in health.items()
                        if hp < cfg.heal_hp and self.strong_damage(name, cfg.rapid_drop)]
         avatar_needed = (all_known and len(health) >= 2 and len(fast_losses) >= 2

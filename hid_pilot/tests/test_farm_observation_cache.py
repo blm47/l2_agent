@@ -164,7 +164,7 @@ def test_background_level_is_read_without_name_panel(monkeypatch):
     monkeypatch.setattr("hid_pilot.farm_observer.time.monotonic", lambda: 0.)
     numbers = Mock()
     numbers.detect.return_value = [(None, "22", .99)]
-    monkeypatch.setattr("hid_pilot.farm_observer.NumbersReader", lambda: numbers)
+    monkeypatch.setattr("hid_pilot.farm_observer.background_numbers", lambda: numbers)
     box = BarBox(x1=.1, y1=.1, x2=.5, y2=.15)
     cache = FarmIdentityCache(BarProfile(width=200, height=100, target_level=box), None)
     image = np.zeros((100, 200, 3), dtype=np.uint8)

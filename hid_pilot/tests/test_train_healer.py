@@ -106,7 +106,7 @@ def test_combat_rescue_alternates_battle_and_major_while_cooldowns_are_active():
     policy.ingest(state(2.6, tank=.12))
     policy.arrival_pending = True
     policy.reachable_until["@slot3"] = 10.
-    policy.ready_at["area_heal"] = 30.
+    policy.ready_at["circlet_of_heal"] = 30.
     policy.ready_at["balance"] = 30.
     snapshot = state(2.7, tank=.095)
     first = policy.decide(snapshot, 2.7)
@@ -123,7 +123,7 @@ def test_collecting_emergency_uses_space_when_balance_unavailable():
     policy = collecting(.095)
     policy.ready_at.update(balance=30., battle=30.)
     result = policy.decide(state(2.7, tank=.095), 2.7)
-    assert (result.skill, result.target) == ("area_heal", None)
+    assert (result.skill, result.target) == ("circlet_of_heal", None)
     assert policy.ready("major", 2.7)
 
 
