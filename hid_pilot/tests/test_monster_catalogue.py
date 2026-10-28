@@ -15,17 +15,17 @@ def observation(at, name="Gremlin", **changes):
                              confidence=.95).model_copy(update=changes)
 
 
-def test_new_name_saved_only_after_six_independent_matching_readings(tmp_path):
+def test_new_name_saved_only_after_three_independent_matching_readings(tmp_path):
     path = tmp_path / "monsters.sqlite3"
     catalogue = MonsterCatalogue(path)
     consensus = MonsterNameConsensus(catalogue)
-    for index in range(5):
+    for index in range(2):
         result = consensus.observe(observation(index * .5), index * .5)
         assert result.name is None
         assert result.raw_name == "Gremlin"
         assert catalogue.lookup("Gremlin") is None
-    result = consensus.observe(observation(2.5), 2.5)
-    assert result.name == "Gremlin" and result.name_confirmations == 6
+    result = consensus.observe(observation(1.), 1.)
+    assert result.name == "Gremlin" and result.name_confirmations == 3
     assert MonsterCatalogue(path).lookup("gremlin") == "Gremlin"
 
 
@@ -44,6 +44,18 @@ def test_alternating_names_do_not_accumulate_votes(tmp_path):
         assert consensus.observe(observation(index * .5, "Gremlin" if index % 2 else "Gremiin"),
                                  index * .5).name is None
     assert not catalogue.load()
+
+
+def test_new_target_does_not_compete_with_previous_monsters_votes(tmp_path):
+    catalogue = MonsterCatalogue(tmp_path / "monsters.sqlite3")
+    consensus = MonsterNameConsensus(catalogue)
+    for index in range(8):
+        consensus.observe(observation(index * .5, "Kanil Succubus"), index * .5)
+    consensus.reset_target()
+    for index in range(8, 11):
+        result = consensus.observe(observation(index * .5, "Rowin Undine"), index * .5)
+    assert result.name == "Rowin Undine"
+    assert result.name_confirmations == 3
 
 
 def test_replayed_timestamp_and_stale_reading_are_not_confirmations(tmp_path):
@@ -109,7 +121,7 @@ def test_confirmation_is_written_only_once_per_matching_streak(tmp_path):
     catalogue.confirm.assert_called_once_with("Gremlin", 1)
 
 
-def test_background_confirmation_runs_real_ocr_six_times_on_unchanged_pixels(monkeypatch, tmp_path):
+def test_background_confirmation_runs_real_ocr_three_times_on_unchanged_pixels(monkeypatch, tmp_path):
     monkeypatch.setattr(threading.Thread, "start", lambda self: None)
     numbers = Mock()
     points = [[0, 0], [50, 0], [50, 10], [0, 10]]
@@ -125,7 +137,7 @@ def test_background_confirmation_runs_real_ocr_six_times_on_unchanged_pixels(mon
     monkeypatch.setattr("hid_pilot.farm_observer.time.monotonic", lambda: now[0])
 
     def schedule(seconds):
-        if tick[0] == 6:
+        if tick[0] == 3:
             return True
         now[0] = tick[0] * .5
         cache.pending = (image.copy(), now[0], cache.signature(image), 0)
@@ -135,6 +147,6 @@ def test_background_confirmation_runs_real_ocr_six_times_on_unchanged_pixels(mon
     cache.stop_event = Mock()
     cache.stop_event.wait.side_effect = schedule
     cache._run()
-    assert numbers.detect.call_count == 6
+    assert numbers.detect.call_count == 3
     assert catalogue.lookup("Gremlin") == "Gremlin"
-    assert cache.result[2].name_confirmations == 6
+    assert cache.result[2].name_confirmations == 3

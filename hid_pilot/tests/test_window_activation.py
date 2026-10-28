@@ -121,6 +121,66 @@ def test_helper_detaches_on_error_after_attach(monkeypatch):
     assert user.AttachThreadInput.call_args.args == (300, 100, False)
 
 
+def test_recovery_restores_focus_through_both_queues_without_shortcuts(monkeypatch):
+    user, state = native_api(monkeypatch)
+    user.SetForegroundWindow.side_effect = lambda hwnd: False
+    user.SetFocus.side_effect = lambda hwnd: state.update(foreground=hwnd)
+    data = payload()
+    data["strategy"] = "attached_focus"
+    assert _activate_native(data) == {"focused": True, "method": "attached_focus"}
+    assert [call.args for call in user.AttachThreadInput.call_args_list] == [
+        (300, 100, True), (300, 200, True), (300, 200, False), (300, 100, False),
+    ]
+    user.BringWindowToTop.assert_called_once_with(2)
+    user.SetActiveWindow.assert_called_once_with(2)
+    user.SetFocus.assert_called_once_with(2)
+    user.SwitchToThisWindow.assert_not_called()
+
+
+def test_recovery_detaches_first_queue_when_target_attach_fails(monkeypatch):
+    user, _ = native_api(monkeypatch)
+    user.AttachThreadInput.side_effect = [True, False, True]
+    monkeypatch.setattr("hid_pilot.window_activation.ctypes.get_last_error", lambda: 5)
+    data = payload()
+    data["strategy"] = "attached_focus"
+    with pytest.raises(RuntimeError, match="AttachThreadInput"):
+        _activate_native(data)
+    assert user.AttachThreadInput.call_args.args == (300, 100, False)
+    user.SetFocus.assert_not_called()
+
+
+def test_recovery_detaches_both_queues_on_focus_error(monkeypatch):
+    user, _ = native_api(monkeypatch)
+    user.SetActiveWindow.side_effect = OSError("Focus failure")
+    data = payload()
+    data["strategy"] = "attached_focus"
+    with pytest.raises(OSError):
+        _activate_native(data)
+    assert [call.args for call in user.AttachThreadInput.call_args_list[-2:]] == [
+        (300, 200, False), (300, 100, False),
+    ]
+
+
+def test_recovery_stops_if_user_changes_window_between_native_calls(monkeypatch):
+    user, state = native_api(monkeypatch)
+    user.BringWindowToTop.side_effect = lambda hwnd: state.update(foreground=3)
+    data = payload()
+    data["strategy"] = "attached_focus"
+    with pytest.raises(RuntimeError, match="Пользователь сменил"):
+        _activate_native(data)
+    user.SetActiveWindow.assert_not_called()
+    user.SetFocus.assert_not_called()
+
+
+def test_recovery_does_not_report_success_if_windows_keeps_source_active(monkeypatch):
+    user, _ = native_api(monkeypatch)
+    user.SetForegroundWindow.side_effect = lambda hwnd: False
+    monkeypatch.setattr("hid_pilot.window_activation.time.monotonic", Mock(side_effect=[0., 1.]))
+    data = payload()
+    data["strategy"] = "attached_focus"
+    assert not _activate_native(data)["focused"]
+
+
 def test_successful_child_is_hidden_and_sends_no_keyboard_events(monkeypatch):
     process = Mock(returncode=0)
     process.poll.return_value = 0

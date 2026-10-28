@@ -134,3 +134,15 @@ def test_death_is_reported_once_until_resurrection():
     notify.revived()
     notify.death()
     assert telegram.notify_death.call_count == 2
+
+
+def test_support_death_message_names_role_and_support_window():
+    message = PlayerDied("duo.pilot", "LU4 - Support", "Саппорт").message()
+    assert "Саппорт умер" in message
+    assert "LU4 - Support" in message
+
+
+def test_duo_farmer_death_message_does_not_promise_resurrection():
+    message = PlayerDied("duo.pilot", "Окно МА", "МА").message()
+    assert "МА умер" in message
+    assert "Ожидание воскрешения" not in message

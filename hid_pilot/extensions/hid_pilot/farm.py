@@ -3,6 +3,7 @@
 """
 
 import logging
+import json
 import math
 import random
 import time
@@ -152,15 +153,26 @@ class Farmer:
         self.mob_statistics = MobStatistics(self.clock())
         self.target_reader = TargetReader(profile) if isinstance(profile, BarProfile) else None
         self.last_target = None
+        self.target_log_signature: tuple | None = None
         self.own_cp: float | None = None
         self.party_profile: PartyProfile | None = None
         self.current_action = "Фарм"
         self.identity_cache = None
         self.observation_generation = controller.pause_generation
         self.display_data: tuple | None = None
+        self.observation_failure = ""
+        self.observation_frame: np.ndarray | None = None
+        self.observation_recovering = False
+        self.observation_timings: dict[str, float] = {}
         self.catalogue: MonsterCatalogue | None = None
+        self.debug_recorder = None
 
     def setup_observation(self, base: Path) -> None:
+        from hid_pilot.observation_debug import ObservationDebugRecorder
+
+        if getattr(self.controller, "debug_capture", False) is True:
+            self.debug_recorder = ObservationDebugRecorder(user_data_dir() / "observation-debug", self.profile)
+            self.report(f"ДебагСтарт: сохранение ошибок цели и уровней включено: {self.debug_recorder.directory}")
         path = base / "party.json"
         if path.exists():
             self.party_profile = PartyProfile.model_validate_json(path.read_text("utf-8"))
@@ -174,12 +186,15 @@ class Farmer:
             self.report("Область уровня цели не настроена: выделите цифры уровня в ручной разметке статов")
 
     def close_observation(self) -> None:
+        if self.debug_recorder is not None:
+            self.debug_recorder.close()
         if self.identity_cache is not None:
             self.identity_cache.close()
 
     def invalidate_target(self) -> None:
         self.mob_statistics.reset_target()
         self.last_target = None
+        self.target_log_signature = None
         if self.identity_cache is not None:
             self.identity_cache.invalidate()
 
@@ -188,8 +203,40 @@ class Farmer:
         logger.info(text)
         self.notify(text)
 
+    def target_description(self) -> str:
+        """
+        Описывает текущее распознавание без подстановки прежнего имени или HP.
+        """
+        observation = self.last_target
+        if observation is None:
+            return "имя неизвестно; тип unknown; класс неизвестно; клан неизвестно; HP неизвестно"
+        hp = f"{observation.hp:.1%}" if observation.hp is not None else "неизвестно"
+        return (f"имя «{observation.name or 'неизвестно'}»; тип {observation.kind}; "
+                f"класс «{observation.player_class or 'неизвестно'}»; "
+                f"клан «{observation.clan or 'неизвестно'}»; HP {hp}; "
+                f"OCR «{observation.raw_name or observation.name or 'неизвестно'}»; "
+                f"подтверждений {observation.name_confirmations}; "
+                f"confidence {observation.confidence:.0%}; смерть {observation.dead}")
+
+    def log_target_observation(self) -> None:
+        """
+        Пишет смену идентичности и доступности HP, без спама каждого процента.
+        """
+        observation = self.last_target
+        signature = ((observation.name, observation.raw_name, observation.kind, observation.player_class, observation.clan,
+                      observation.hp is not None, observation.dead) if observation is not None else ())
+        if signature != self.target_log_signature:
+            logger.info("Распознана цель: %s", self.target_description())
+            self.target_log_signature = signature
+
     def observe(self) -> tuple[float, float, float | None]:
-        for attempt in range(self.config.observation_attempts):
+        recovering = False
+        successes = 0
+        recovery_started = 0.
+        recovery_attempts = math.ceil(60 / self.config.observation_delay)
+        for attempt in range(self.config.observation_attempts + recovery_attempts):
+            self.observation_recovering = recovering
+            self.observation_failure = ""
             if isinstance(self.profile, BarProfile) and self.profile.numbers:
                 from hid_pilot.numbers import shared_numbers
                 # Дожидаемся фонового OCR до capture, чтобы не состарить кадр.
@@ -200,44 +247,117 @@ class Farmer:
             if target is not None:
                 self.target_pending = target > 0
             if hp is not None and mp is not None:
+                successes += 1
+                if recovering and successes < 3:
+                    self.controller.wait(self.config.observation_delay)
+                    continue
+                if recovering:
+                    self.observation_recovering = False
+                    self.report("Наблюдение восстановлено: 3 свежих кадра HP/MP подряд")
                 return hp, mp, target
-            self.report(f"HP/MP не распознаны: попытка {attempt + 1}/{self.config.observation_attempts}")
-            if attempt + 1 < self.config.observation_attempts:
-                # Первый повтор без движения; сидящего персонажа не сдвигаем.
-                if attempt >= 1 and self.config.observation_movement and not self.sitting:
-                    self.press("WASD"[(attempt - 1) % 4])
-                self.controller.wait(self.config.observation_delay)
-        raise RuntimeError("HP/MP не распознаны после повторных попыток; фарм остановлен")
+            successes = 0
+            reason = self.observation_failure or "; ".join(
+                f"{name.upper()} неизвестно ({self.observation_details.get(name, 'источник неизвестен')})"
+                for name, value in (("hp", hp), ("mp", mp)) if value is None)
+            if attempt == 0:
+                self.controller.release_inputs()
+            if attempt == min(2, self.config.observation_attempts - 1):
+                self.save_observation_failure(reason)
+            if not recovering:
+                self.report(f"HP/MP не распознаны: попытка {attempt + 1}/{self.config.observation_attempts}; {reason}")
+            elif (attempt - self.config.observation_attempts) % 10 == 0:
+                self.report(f"Ожидание восстановления HP/MP: {reason}")
+            if not recovering and attempt + 1 >= self.config.observation_attempts:
+                recovering = True
+                recovery_started = self.clock()
+                self.invalidate_target()
+                self.own_cp = None
+                self.target_pending = False
+                self.display_data = None
+                self.report("Наблюдение потеряно: ввод отпущен; до 60 с ждём 3 свежих кадра без WASD")
+            if recovering and self.clock() - recovery_started >= 60:
+                break
+            self.controller.wait(self.config.observation_delay)
+        raise RuntimeError("HP/MP не распознаны после ожидания восстановления; фарм остановлен")
 
-    def _observe(self) -> tuple[float | None, float | None, float | None]:
+    def save_observation_failure(self, reason: str) -> None:
+        """
+        Сохраняет один перезаписываемый комплект диагностики выбранного окна.
+        """
+        if getattr(self.controller, "debug_capture", False) is not True:
+            return
+        if not isinstance(self.observation_frame, np.ndarray) or not isinstance(self.profile, BarProfile):
+            return
+        import cv2
+
+        try:
+            directory = user_data_dir() / "observation-failure"
+            directory.mkdir(parents=True, exist_ok=True)
+            images = {"window": self.observation_frame}
+            for name in ("hp", "mp"):
+                box = self.profile.numbers.get(name) or self.profile.bars.get(name)
+                if box is not None:
+                    images[name] = self.profile.crop(self.observation_frame, box)
+            for name, frame in images.items():
+                ok, encoded = cv2.imencode(".png", frame)
+                if ok:
+                    encoded.tofile(directory / f"{name}.png")
+            (directory / "reason.json").write_text(json.dumps(
+                {"reason": reason, "sources": self.observation_details,
+                 "read_seconds": self.observation_timings,
+                 "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2), "utf-8")
+            self.report(f"Диагностика HP/MP сохранена: {directory}")
+        except (OSError, cv2.error):
+            logger.exception("Не удалось сохранить диагностику HP/MP")
+
+    def _observe(self, resources_only: bool = False) -> tuple[float | None, float | None, float | None]:
         self.controller.checkpoint()
         if self.clock() >= self.deadline:
             raise RuntimeError("Достигнут лимит времени фарма")
         while True:
             generation = self.controller.pause_generation
             image = self.controller.capture()
+            self.observation_frame = image if getattr(self.controller, "debug_capture", False) is True else None
             started = self.clock()
             self.controller.checkpoint()
             if generation == self.controller.pause_generation:
                 break
         values = []
-        for name in ("hp", "mp", "target_hp"):
+        self.observation_details.clear()
+        self.observation_timings.clear()
+        for name in (("hp", "mp") if resources_only else ("hp", "mp", "target_hp")):
+            read_started = self.clock()
             if isinstance(self.profile, BarProfile):
                 value, source = self.profile.read_detail(image, name)
                 self.observation_details[name] = source
             else:
                 value = self.profile.read(image, name)
             values.append(value)
-        hp, mp, target = values
+            self.observation_timings[name] = round(self.clock() - read_started, 3)
+        hp, mp = values[:2]
+        target = None if resources_only else values[2]
         if self.clock() - started > 1:
-            logger.debug("Чтение HP/MP заняло больше секунды; повторяем на свежем кадре")
+            self.observation_failure = f"Чтение ресурсов заняло {self.clock() - started:.2f} с, лимит свежести 1 с"
+            if not resources_only:
+                self.report(f"{self.observation_failure}; время областей: {self.observation_timings}; повторяем только HP/MP")
+                self.invalidate_target()
+                return self._observe(resources_only=True)
             return None, None, None
         if hp == 0:
             self.sitting = False
             self.target_pending = False
             self.invalidate_target()
-            wait_for_resurrection(self.controller, self.profile, self.deadline, self.notify, self.clock)
+            self.on_own_death()
             return self._observe()
+        if resources_only:
+            self.own_cp = None
+            self.display_data = None
+            if generation != self.controller.pause_generation:
+                self.observation_failure = "Пауза или смена состояния во время чтения ресурсов"
+                return None, None, None
+            if not self.observation_recovering:
+                self.on_observation(image, hp, mp, None)
+            return hp, mp, None
         if self.target_reader is not None:
             if self.identity_cache is not None:
                 if generation != self.observation_generation:
@@ -246,6 +366,12 @@ class Farmer:
                 observation, level, members = self.identity_cache.snapshot(image, started)
             else:
                 observation = self.target_reader.read(image, started)
+            # Фоновый кеш отдаёт только идентичность: смерть проверяем на текущем кадре.
+            marker = bool(self.profile.dead_marker_visible(image))
+            observation = observation.model_copy(update={
+                "death_marker": marker,
+                "dead": self.target_reader.death(
+                    target if target is not None else observation.hp, marker)})
             if target is not None:
                 # Настроенная область HP приоритетна; OCR имени не должен скрывать её результат.
                 observation = observation.model_copy(update={
@@ -254,7 +380,9 @@ class Farmer:
                 target = observation.hp
                 self.observation_details["target_hp"] = "OCR панели цели"
             if self.clock() - started > 1:
-                return None, None, None
+                self.report(f"OCR цели задержал кадр до {self.clock() - started:.2f} с: повторяем HP/MP на новом кадре")
+                self.invalidate_target()
+                return self._observe(resources_only=True)
             self.last_target = observation
         if isinstance(self.profile, BarProfile):
             self.own_cp = self.profile.read(image, "cp") if "cp" in self.profile.bars.keys() | self.profile.numbers.keys() else None
@@ -265,16 +393,39 @@ class Farmer:
                     from hid_pilot.numbers import shared_numbers
                     members = read_party(image, self.party_profile, shared_numbers())
             if self.clock() - started > 1:
-                return None, None, None
+                self.report(f"Дополнительные статы задержали кадр до {self.clock() - started:.2f} с: повторяем HP/MP на новом кадре")
+                self.invalidate_target()
+                return self._observe(resources_only=True)
             if self.last_target is not None:
                 self.mob_statistics.observe(self.last_target, self.clock())
             selected = self.last_target.model_dump() if self.last_target is not None else {"hp": target}
             self.display_data = ({"hp": hp, "mp": mp, "cp": self.own_cp, "level": level}, selected, members)
+            if self.profile.summon is not None:
+                from hid_pilot.summon import read_summon
+                self.display_data[0].update(read_summon(image, self.profile))
             self.publish_statistics()
         if generation != self.controller.pause_generation:
+            self.observation_failure = "Пауза или смена состояния во время наблюдения"
             return None, None, None
-        self.on_observation(image, hp, mp, target)
+        self.log_target_observation()
+        if self.debug_recorder is not None:
+            party_at = getattr(self.identity_cache, "party_at", None)
+            party_age = (round(max(0., time.monotonic() - party_at), 3)
+                         if isinstance(party_at, (int, float)) else None)
+            self.debug_recorder.observe(image, {
+                "hp": hp, "mp": mp, "own_level": level,
+                "target": self.last_target.model_dump(mode="json") if self.last_target else {"hp": target},
+                "sources": self.observation_details.copy(),
+                "party": [member.model_dump(mode="json") for member in members],
+                "party_profile": self.party_profile.model_dump(mode="json") if self.party_profile else None,
+                "party_ocr_age_seconds": party_age,
+                "read_seconds": self.observation_timings.copy(), "action": self.current_action})
+        if not self.observation_recovering:
+            self.on_observation(image, hp, mp, target)
         return hp, mp, target
+
+    def on_own_death(self) -> None:
+        wait_for_resurrection(self.controller, self.profile, self.deadline, self.notify, self.clock)
 
     def on_observation(self, image: np.ndarray, hp: float | None,
                        mp: float | None, target: float | None) -> None:

@@ -84,7 +84,20 @@ def test_ranked_statistics_include_all_names_in_separate_numbered_rows():
 
 def test_empty_statistics_show_no_kills():
     stats = MobStatistics(0.)
-    assert stats.summary(0.).endswith("подтверждено убийств: 0\nнет")
+    assert stats.summary(0.).endswith("подтверждено убийств: 0; не подтверждено убийств: 0\nнет")
+
+
+def test_unconfirmed_kills_are_separate_from_confirmed_and_visible_in_reports():
+    stats = MobStatistics(0.)
+    stats.record_kill("Mob")
+    stats.record_unconfirmed_kill()
+    stats.record_unconfirmed_kill()
+    assert sum(stats.counts.values()) == 1
+    assert stats.minute_count == 1
+    for text in (stats.summary(30.), stats.report(60.)):
+        assert "не подтверждено убийств: 2" in text
+    stats.reset_target()
+    assert stats.unconfirmed_kills == 2
 
 
 @pytest.mark.parametrize("elapsed, expected", [(0, "00:00:00"), (59, "00:00:59"),

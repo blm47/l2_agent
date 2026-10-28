@@ -45,7 +45,7 @@ def find_player_panels(image: np.ndarray, reader: NumbersReader, top_only: bool 
         high = np.max([line[1] for line in group], axis=0)
         box = BarBox(x1=max(0, low[0] - 3) / width, y1=max(0, low[1] - 3) / height,
                      x2=min(width, high[0] + 3) / width, y2=min(height, high[1] + 3) / height)
-        candidates.append(PlayerCandidate(box=box, evidence=" / ".join(line[2] for line in group)
+        candidates.append(PlayerCandidate(box=box.expanded_horizontal(0., .6), evidence=" / ".join(line[2] for line in group)
                                           + f" · OCR {min(line[3] for line in group):.0%}; подтвердите игрока"))
     if target_hp is not None:
         # Имя монстра занимает ту же область, что ник игрока, но может быть одной строкой.
@@ -59,6 +59,6 @@ def find_player_panels(image: np.ndarray, reader: NumbersReader, top_only: bool 
             box = BarBox(x1=max(0, low[0] - 3) / width, y1=max(0, low[1] - 3) / height,
                          x2=min(width, high[0] + 3) / width,
                          y2=min(height, high[1] + 3, target_hp.y1 * height - 1) / height)
-            candidates.append(PlayerCandidate(box=box, evidence="Общая область имени над HP: "
+            candidates.append(PlayerCandidate(box=box.expanded_horizontal(0., .6), evidence="Общая область имени над HP: "
                                               + " / ".join(line[2] for line in headers) + "; подтвердите цель"))
     return candidates

@@ -4,6 +4,58 @@ from pydantic import ValidationError
 from hid_pilot.farm_melee import MeleeConfig
 from hid_pilot.target import TargetObservation
 from test_melee_farm import harness
+from test_duo import make_duo
+
+
+@pytest.mark.parametrize("duo_mode", [False, True])
+@pytest.mark.parametrize("mp,allowed", [(.09, False), (.0999, False), (.1, True), (.5, True)])
+def test_ma_self_buff_requires_at_least_ten_percent_mp(duo_mode, mp, allowed):
+    if duo_mode:
+        farmer, controller = make_duo(buff1_key="F5", heal_key=None)
+        farmer.next_buff = float("inf")
+        original_read = farmer.profile.read
+        farmer.profile.read = lambda image, name: mp if name == "mp" else original_read(image, name)
+    else:
+        farmer, controller, _, state = harness(buff1_key="F5")
+        state[1] = mp
+    farmer.cast_buffs()
+    assert (farmer.buff_actions == 1) is allowed
+    assert farmer.config.buff_min_mp == .1
+    if not allowed:
+        assert farmer.buff_ready[1] == 0.
+        assert "недостаточно MP" in farmer.buff_deferred[1]
+
+
+def test_deferred_low_mp_buff_retries_without_rebuff_timer_reset():
+    farmer, controller, _, state = harness(buff1_key="F5")
+    state[1] = .05
+    farmer.cast_buffs()
+    farmer.cast_buffs()
+    controller.key.assert_not_called()
+    messages = [call.args[0] for call in farmer.notify.call_args_list]
+    assert sum("недостаточно MP" in message for message in messages) == 1
+    state[1] = .1
+    farmer.cast_buffs()
+    controller.key.assert_called_once_with("F5", 100)
+    assert farmer.buff_ready[1] > 0
+
+
+def test_mp_is_checked_again_before_next_ma_buff():
+    farmer, controller, _, state = harness(buff1_key="F5", buff2_key="F6")
+    original_key = controller.key.side_effect
+
+    def key(name, duration, **kwargs):
+        original_key(name, duration, **kwargs)
+        if name == "F5":
+            state[1] = .09
+
+    controller.key.side_effect = key
+    farmer.cast_buffs()
+    assert [call.args[0] for call in controller.key.call_args_list] == ["F5"]
+    assert farmer.buff_ready[2] == 0
+    state[1] = .1
+    farmer.cast_buffs()
+    assert [call.args[0] for call in controller.key.call_args_list] == ["F5", "F6"]
 
 
 def test_three_buffs_have_independent_casts_and_rebuff_timers():
@@ -50,7 +102,7 @@ def test_empty_buff_keys_report_disabled_once():
     farmer.cast_buffs()
     farmer.cast_buffs()
     messages = [call.args[0] for call in farmer.notify.call_args_list]
-    disabled = [message for message in messages if "баффы фармера отключены" in message]
+    disabled = [message for message in messages if "баффы МА отключены" in message]
     assert len(disabled) == 1
     assert "buff1_key" in disabled[0]
 
@@ -88,7 +140,7 @@ def test_vampiric_does_not_attack_players_or_npcs(kind):
     farmer, controller, _, _ = harness(vampiric_key="F8")
     farmer.last_target = TargetObservation(at=0, kind=kind)
     assert not farmer.use_vampiric(.2, .9)
-    controller.key.assert_not_called()
+    controller.key.assert_called_once_with("ESC", 80)
 
 
 def test_vampiric_uses_own_threshold_cast_and_cooldown():
@@ -112,7 +164,7 @@ def test_real_fight_uses_vampiric_then_independent_potion():
     state[:] = [.3, 1., .9]
     original_key = controller.key.side_effect
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         original_key(name, duration)
         if name == farmer.config.heal:
             state[2] = 0.

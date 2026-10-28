@@ -6,17 +6,23 @@ set attack 3
 set attack_delay 1.2
 set loot C
 set heal F2
+# Сильный HP-эликсир: около +50% HP, отдельный откат 5 минут.
+set hp_elixir_key NUM2
+set hp_elixir_hp_threshold 0.5
+set hp_elixir_cooldown 300
 set rest =
 set stand -
 # Сесть на реген при низком HP/MP: включается только явно.
 set regen_enabled false
-# После выбора живой цели сначала подбирать лут 1 секунду, затем атаковать.
-set pre_attack_loot true
+# Дополнительный подбор перед атакой выбранной цели.
+set loot_before_farm false
 set humanize true
 set approach_delay 11
 set target_verify_seconds 2
+set target_max_hp_multiplier 10
 set quiet_seconds 2.5
-set loot_hold 1.0
+set loot_attempts 1
+set loot_hold 0.05
 set search_moves 3
 set search_cycles 30
 # Пять неудачных атак по одному имени: выход W/A или S/D, 20–30 удержаний по 1,5 с.
@@ -28,6 +34,10 @@ set overhit_keys "1"
 
 # true — overhit-скиллы также используются в обычном бою по откату; false — только добивание.
 set overhit_during_combat false
+
+# Эксперимент: next target и атака при HP цели ниже 7%, overhit только при HP <20%.
+set experimental_fast_farm false
+set fast_target_hp_threshold 0.07
 set damage_interval 3
 # Откат overhit на клавише 1 — 3 секунды; клавиша 2 используется для агра.
 set overhit_interval 3
@@ -53,6 +63,7 @@ set cycles 10000
 # Три селф/пати-баффа: пустая кнопка отключает слот.
 set buff1_key "NUM9"
 set buff_delay_minutes 5
+set buff_min_mp 0.1
 set aggro_key "2"
 set buff1_rebuff_minutes 19
 set buff1_cast_seconds 2

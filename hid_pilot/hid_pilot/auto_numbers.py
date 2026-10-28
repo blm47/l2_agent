@@ -49,7 +49,7 @@ def find_numbers(image: np.ndarray, reader: NumbersReader, top_only: bool = True
         kind = nearby[0] if len(nearby) == 1 else None
         evidence = f"Метка {kind.upper()} в той же строке" if kind else "Нет однозначной метки"
         candidates.append(NumberCandidate(box=BarBox(x1=x1 / width, y1=y1 / height,
-                                                     x2=x2 / width, y2=y2 / height),
+                                                     x2=x2 / width, y2=y2 / height).expanded_horizontal(.2, .2),
                                           numbers=checked, kind=kind, evidence=evidence))
     # Единственная немаркированная пара справа от панели персонажа — предложение цели.
     own = [candidate for candidate in candidates if candidate.kind in {"hp", "mp"}]

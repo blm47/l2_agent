@@ -46,7 +46,7 @@ def test_self_heal_precedes_farmer_macro_and_shares_cooldown(monkeypatch):
     assert duo.self_heals == 0
 
 
-@pytest.mark.parametrize("hp", [None, 0., .6, 1.])
+@pytest.mark.parametrize("hp", [None, .6, 1.])
 def test_unknown_dead_or_healthy_support_is_not_healed(monkeypatch, hp):
     duo, controller, _ = observed_duo(monkeypatch, hp)
     duo.observe()

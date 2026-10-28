@@ -115,9 +115,10 @@ class AutoReview(QDialog):
                  initial_profile: BarProfile | None = None) -> None:
         super().__init__(parent)
         self.setFont(QFont("Segoe UI", 10))
-        self.setWindowTitle("Автопоиск HP/MP/CP, цели и пати — проверка")
+        self.setWindowTitle("Автопоиск HP/MP/CP, цели, пати и самона/пета — проверка")
         self.resize(1100, 750)
         self.source_image = image
+        self.summon = initial_profile.summon if initial_profile else None
         self.boxes: dict[str, BarBox] = {}
         self.choices: dict[str, QComboBox] = {}
         self.target_player_panel: BarBox | None = initial_profile.target_player_panel if initial_profile else None
@@ -132,7 +133,8 @@ class AutoReview(QDialog):
         layout = QVBoxLayout(self)
         hint = QLabel("Проверьте HP, MP, CP, цель и область пати на снимке.\n"
                       "Для пати проверьте первого участника сверху, полную длину полос и отступы для питомцев.\n"
-                      "Кнопка ручной корректировки позволяет выделить панель и исправить разметку всех строк.")
+                      "Кнопка ручной корректировки позволяет выделить панель и исправить разметку всех строк.\n"
+                      "Новые OCR-области: статы +20% слева и справа, имя цели +100% справа.")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         form = QFormLayout()
@@ -194,6 +196,15 @@ class AutoReview(QDialog):
         form.addRow(target_edit)
         self.party_error = QLabel()
         form.addRow(self.party_error)
+        from hid_pilot.auto_summon import find_summon_bars
+        self.summon_choice = QComboBox()
+        self.summon_choice.addItem("Сохранённая разметка / вручную", None)
+        for index, boxes in enumerate(find_summon_bars(image), 1):
+            self.summon_choice.addItem(f"Пара HP/MP {index} — проверьте полную длину", boxes)
+        form.addRow("Самон / пет", self.summon_choice)
+        summon_edit = QPushButton("Подтвердить HP/MP и иконку самона / пета…")
+        summon_edit.clicked.connect(self.edit_summon)
+        form.addRow(summon_edit)
         layout.addLayout(form)
         self.canvas = ReviewCanvas(image)
         self.canvas.editable = False
@@ -209,12 +220,21 @@ class AutoReview(QDialog):
         if len(player_candidates or []) == 1:
             self.player_choice.setCurrentIndex(1)
 
+    def edit_summon(self) -> None:
+        from hid_pilot.summon_review import SummonReview
+        dialog = SummonReview(self.source_image, self.summon, self,
+                              suggested_boxes=self.summon_choice.currentData())
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.summon = dialog.profile
+            self.update_boxes()
+
     def edit_own_regions(self, initial_mode: str = "hp") -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Ручная разметка статов")
         dialog.resize(1000, 700)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Выберите стат и выделите числа текущее / максимум целиком.\n"
+                                "Запас добавляется автоматически: статы +20% с каждой стороны, имя цели +100% справа.\n"
                                 "Сохранение применяется после подтверждения основного окна."))
         mode = QComboBox()
         for name, label in LABELS.items():
@@ -239,7 +259,12 @@ class AutoReview(QDialog):
         layout.addWidget(canvas, 1)
 
         def choose(box: BarBox) -> None:
-            selected[mode.currentData()] = box
+            name = mode.currentData()
+            if name in LABELS or name in self.level_boxes:
+                box = box.expanded_horizontal(.2, .2)
+            elif name == "target_panel":
+                box = box.expanded_horizontal(0., 1.)
+            selected[name] = box
             canvas.boxes = selected.copy()
             canvas.update()
 
@@ -279,6 +304,9 @@ class AutoReview(QDialog):
         if "target_hp" in self.boxes:
             self.target_config["target_hp_presence_box"] = self.boxes["target_hp"].model_dump()
         self.canvas.boxes = self.boxes.copy()
+        if self.summon is not None:
+            for name in ("hp", "mp", "icon"):
+                self.canvas.boxes[f"Самон / пет: {name}"] = getattr(self.summon, name)
         if self.system_chat is not None:
             self.canvas.boxes["Системный чат"] = self.system_chat
         self.canvas.boxes.update({key: value for key, value in self.level_boxes.items() if value is not None})
@@ -310,12 +338,13 @@ class AutoReview(QDialog):
         dialog.resize(1000, 650)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Выделите общую область над HP: имя монстра/NPC или ник, класс и клан игрока. "
-                                "Не включайте эмблему, значки и кнопку закрытия."))
+                                "Не включайте эмблему, значки и кнопку закрытия. Справа автоматически добавляется запас 100%."))
         canvas = ReviewCanvas(self.source_image)
         layout.addWidget(canvas, 1)
         selected = [self.target_player_panel]
 
         def choose(box: BarBox) -> None:
+            box = box.expanded_horizontal(0., 1.)
             selected[0] = box
             canvas.boxes = {"Игрок": box}
             canvas.update()
@@ -356,7 +385,8 @@ class AutoReview(QDialog):
         hint = QLabel("Выделите панель с именем, строками класса/клана и числами HP.\n"
                       "У монстра внизу есть HP, у NPC этой полосы нет. Выделите её место отдельным режимом "
                       "по снимку монстра, чтобы пропуск цифр OCR не путался с NPC.\n"
-                      "Красный череп выделяется отдельно по снимку мёртвой цели, без наружного кольца.")
+                      "Красный череп выделяется отдельно по снимку мёртвой цели, без наружного кольца.\n"
+                      "Для панели автоматически добавляется 100% справа, для области HP — по 20% слева и справа.")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         layout.addWidget(QLabel("Дополнительно известные имена NPC (необязательно, по одному в строке):"))
@@ -373,7 +403,12 @@ class AutoReview(QDialog):
                     for key in ("target_panel", "target_dead_marker", "target_hp_presence_box")}
 
         def choose(box: BarBox) -> None:
-            selected[("target_panel", "target_dead_marker", "target_hp_presence_box")[mode.currentIndex()]] = box
+            name = ("target_panel", "target_dead_marker", "target_hp_presence_box")[mode.currentIndex()]
+            if name == "target_panel":
+                box = box.expanded_horizontal(0., 1.)
+            elif name == "target_hp_presence_box":
+                box = box.expanded_horizontal(.2, .2)
+            selected[name] = box
             canvas.boxes = {key: value for key, value in selected.items() if value is not None}
             canvas.update()
 

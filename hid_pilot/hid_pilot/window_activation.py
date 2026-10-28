@@ -29,7 +29,7 @@ def request_activation(source: Target, target: Target, stopped: Event,
     """
     Ждёт helper с ограниченным бюджетом; при STOP дочерний процесс завершается.
     """
-    if strategy not in {"foreground", "task_switch"}:
+    if strategy not in {"foreground", "task_switch", "attached_focus"}:
         raise ValueError("Неизвестная стратегия активации окна")
     payload = json.dumps({"source": source.model_dump(), "target": target.model_dump(), "strategy": strategy})
     entry = ([sys.executable, "--activate-window"] if getattr(sys, "frozen", False)
@@ -81,7 +81,7 @@ def request_activation(source: Target, target: Target, stopped: Event,
 
 def _activate_native(payload: dict) -> dict:
     strategy = payload.get("strategy", "foreground")
-    if strategy not in {"foreground", "task_switch"}:
+    if strategy not in {"foreground", "task_switch", "attached_focus"}:
         raise ValueError("Неизвестная стратегия активации окна")
     user = ctypes.WinDLL("user32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -94,6 +94,9 @@ def _activate_native(payload: dict) -> dict:
         "GetClientRect": ([wintypes.HWND, ctypes.POINTER(wintypes.RECT)], wintypes.BOOL),
         "ClientToScreen": ([wintypes.HWND, ctypes.POINTER(wintypes.POINT)], wintypes.BOOL),
         "SetForegroundWindow": ([wintypes.HWND], wintypes.BOOL),
+        "BringWindowToTop": ([wintypes.HWND], wintypes.BOOL),
+        "SetActiveWindow": ([wintypes.HWND], wintypes.HWND),
+        "SetFocus": ([wintypes.HWND], wintypes.HWND),
         "AttachThreadInput": ([wintypes.DWORD, wintypes.DWORD, wintypes.BOOL], wintypes.BOOL),
         "PeekMessageW": ([ctypes.POINTER(wintypes.MSG), wintypes.HWND,
                           wintypes.UINT, wintypes.UINT, wintypes.UINT], wintypes.BOOL),
@@ -123,7 +126,7 @@ def _activate_native(payload: dict) -> dict:
             raise RuntimeError("Геометрия окна изменилась")
         return thread
 
-    validate(target)
+    target_thread = validate(target)
     if user.GetForegroundWindow() == target["hwnd"]:
         return {"focused": True, "method": "already_active"}
     source_thread = validate(source)
@@ -138,7 +141,9 @@ def _activate_native(payload: dict) -> dict:
         switch.restype = None
         switch(target["hwnd"], True)
         method = "task_switch"
-    elif not user.SetForegroundWindow(target["hwnd"]) and user.GetForegroundWindow() != target["hwnd"]:
+    elif strategy == "attached_focus" or (
+        not user.SetForegroundWindow(target["hwnd"]) and user.GetForegroundWindow() != target["hwnd"]
+    ):
         # Присоединение очередей может зависнуть внутри Win32. Только helper
         # выполняет его: контроллер завершит весь процесс по timeout или STOP.
         validate(target)
@@ -147,16 +152,32 @@ def _activate_native(payload: dict) -> dict:
         message = wintypes.MSG()
         user.PeekMessageW(ctypes.byref(message), None, 0, 0, 0)
         current_thread = kernel.GetCurrentThreadId()
-        if not user.AttachThreadInput(current_thread, source_thread, True):
-            raise RuntimeError(f"AttachThreadInput отклонён, код {ctypes.get_last_error()}")
+        attached = []
         try:
+            # После сброса связываем также очередь назначения: одного повторного
+            # SetForegroundWindow после переподключения COM недостаточно.
+            threads = (source_thread, target_thread) if strategy == "attached_focus" else (source_thread,)
+            for thread in dict.fromkeys(threads):
+                if thread == current_thread:
+                    continue
+                if not user.AttachThreadInput(current_thread, thread, True):
+                    raise RuntimeError(f"AttachThreadInput отклонён, код {ctypes.get_last_error()}")
+                attached.append(thread)
             validate(target)
             if user.GetForegroundWindow() != source["hwnd"]:
                 raise RuntimeError("Активное окно изменилось при присоединении очереди")
             user.SetForegroundWindow(target["hwnd"])
             method = "attached_queue"
+            if strategy == "attached_focus":
+                for operation in (user.BringWindowToTop, user.SetActiveWindow, user.SetFocus):
+                    validate(target)
+                    if user.GetForegroundWindow() not in (source["hwnd"], target["hwnd"]):
+                        raise RuntimeError("Пользователь сменил активное окно при восстановлении фокуса")
+                    operation(target["hwnd"])
+                method = "attached_focus"
         finally:
-            user.AttachThreadInput(current_thread, source_thread, False)
+            for thread in reversed(attached):
+                user.AttachThreadInput(current_thread, thread, False)
     deadline = time.monotonic() + .4
     while user.GetForegroundWindow() != target["hwnd"] and time.monotonic() < deadline:
         time.sleep(.01)
@@ -164,7 +185,14 @@ def _activate_native(payload: dict) -> dict:
     focused = user.GetForegroundWindow() == target["hwnd"]
     result = {"focused": focused, "method": method}
     if not focused:
-        result["error"] = "Windows не подтвердила foreground"
+        foreground = user.GetForegroundWindow()
+        foreground_pid = wintypes.DWORD()
+        user.GetWindowThreadProcessId(foreground, ctypes.byref(foreground_pid))
+        result["error"] = (
+            f"Windows не подтвердила foreground (метод {method}; "
+            f"активно HWND {foreground}, PID {foreground_pid.value}; "
+            f"ожидалось HWND {target['hwnd']}, PID {target['pid']})"
+        )
     return result
 
 

@@ -35,3 +35,21 @@ def test_all_settings_roundtrip_through_script_and_legacy_json():
 def test_invalid_settings_are_rejected(text):
     with pytest.raises(ValueError):
         parse_duo_settings(text)
+
+
+def test_shipped_profile_uses_two_support_buffs_and_zero_follow():
+    from pathlib import Path
+
+    path = Path(__file__).parents[1] / "extensions/scripts/farmer-healer.duo.pilot"
+    config = parse_duo_settings(path.read_text("utf-8"))
+    assert (config.buff_key, config.support_buff2_key, config.follow_key) == ("F11", "F12", "0")
+    assert config.buff_seconds == config.support_buff2_seconds == 10
+    assert parse_duo_settings(format_duo_settings(config)) == config
+
+
+@pytest.mark.parametrize("text", ["set support_buff2_key ALT+TAB",
+                                 "set support_buff2_seconds 0",
+                                 "set support_buff2_key F12\nset rebuff_minutes 0.3"])
+def test_invalid_second_support_buff_is_rejected(text):
+    with pytest.raises(ValueError):
+        parse_duo_settings(text)

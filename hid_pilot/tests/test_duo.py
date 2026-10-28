@@ -13,11 +13,14 @@ from hid_pilot.party import PartyProfile
 from hid_pilot.farm_melee import MeleeConfig, MeleeFarmer
 
 
-FARMER = Target(hwnd=1, pid=11, title="Фармер", rect=(0, 0, 100, 100))
-SUPPORT = Target(hwnd=2, pid=22, title="Хилер", rect=(100, 0, 200, 100))
+FARMER = Target(hwnd=1, pid=11, title="МА", rect=(0, 0, 100, 100))
+SUPPORT = Target(hwnd=2, pid=22, title="Саппорт", rect=(100, 0, 200, 100))
 
 
 class FakeController:
+    def release_inputs(self):
+        pass
+
     def __init__(self):
         self.transport = SimpleNamespace(protocol="HID_PILOT_V4")
         self.now = 0.
@@ -42,7 +45,7 @@ class FakeController:
         self.role = target
         self.events.append(("window", target.hwnd))
 
-    def key(self, key, duration):
+    def key(self, key, duration, **kwargs):
         self.events.append((self.role.hwnd, key))
 
     def wait(self, seconds):
@@ -50,6 +53,9 @@ class FakeController:
 
 
 def make_duo(**values):
+    # Старые сценарии изолированы от нового отдельного расходника.
+    values.setdefault("hp_elixir_key", None)
+    values.setdefault("support_hp_elixir_key", None)
     values.setdefault("buff_delay_minutes", 0)
     values.setdefault("aggro_key", None)
     values.setdefault("pre_attack_loot", False)
@@ -66,18 +72,30 @@ def make_duo(**values):
     def track(image, hp):
         original_track(image, hp)
         if duo.party_profile is None:
-            # Старые сценарии тестов моделируют баффера с полным MP.
+            # Старые сценарии тестов моделируют саппорта с полным MP.
             duo.previous_resources["support_mp"] = 1.
 
     duo.track_damage = track
     return duo, controller
 
 
+def start_ma_attack(duo, controller, target_hp=1.):
+    # Подготовка живой цели и реальная команда МА; последующие кадры моделируют урон.
+    capture = controller.capture
+    pending = duo.support_pending
+    duo.support_pending = False
+    controller.capture = lambda: (1., target_hp, False)
+    duo.observe_ma()
+    duo.combat_key(duo.config.attack, 100)
+    controller.capture = capture
+    duo.support_pending = pending
+
+
 def test_duo_inherits_melee_algorithms_and_configuration():
     assert issubclass(DuoConfig, MeleeConfig)
     assert issubclass(DuoFarmer, MeleeFarmer)
     for method in ("acquire", "search_cycle", "search_known_target", "fight", "verify_target",
-                   "recover", "escape_from_unreachable", "use_damage_skill", "run_cycle"):
+                   "recover", "use_damage_skill", "run_cycle"):
         assert getattr(DuoFarmer, method) is getattr(MeleeFarmer, method)
 
 
@@ -123,7 +141,7 @@ def test_conflicting_legacy_and_canonical_setting_is_rejected():
 
 def test_inherited_fight_repeats_attack_but_assists_only_once():
     duo, controller = make_duo(attack_delay=.5)
-    controller.capture = lambda: (1., 0. if controller.now >= 2.2 else .9, False)
+    controller.capture = lambda: (1., 0. if controller.now >= 2.2 else .8, False)
     duo.fight(.9)
     assert controller.events.count((1, "R")) > 1
     assert controller.events.count((2, "F3")) == 1
@@ -138,7 +156,7 @@ def test_two_immediate_targets_do_not_enable_follow_between_kills():
     live = [False]
     original_key = controller.key
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         original_key(name, duration)
         if controller.role == FARMER and name == farmer.config.next_target:
             live[0] = True
@@ -146,7 +164,7 @@ def test_two_immediate_targets_do_not_enable_follow_between_kills():
             live[0] = False
 
     controller.key = key
-    controller.capture = lambda: (1., .9 if live[0] else 0., False)
+    controller.capture = lambda: (1., (.8 if farmer.attacking else .9) if live[0] else 0., False)
     farmer.run()
     assert farmer.training_kills == 2
     # Следование после стартового баффа сохраняется, между боями его нет.
@@ -175,7 +193,7 @@ def test_target_found_after_search_switches_from_follow_to_attack_help():
     dead = [False]
     original_key = controller.key
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         original_key(name, duration)
         if controller.role == FARMER and name == farmer.config.next_target:
             selections[0] += 1
@@ -183,7 +201,8 @@ def test_target_found_after_search_switches_from_follow_to_attack_help():
             dead[0] = True
 
     controller.key = key
-    controller.capture = lambda: (1., 0. if dead[0] else .9 if selections[0] >= 2 else None, False)
+    controller.capture = lambda: (1., 0. if dead[0] else
+                                 (.8 if farmer.attacking else .9) if selections[0] >= 2 else None, False)
     farmer.fight()
     assert controller.events.count((2, farmer.config.follow_key)) == 1
     assert controller.events.count((2, farmer.config.support_key)) == 1
@@ -194,7 +213,7 @@ def test_target_found_after_search_switches_from_follow_to_attack_help():
 
 def test_opening_overhit_also_assists_once():
     duo, controller = make_duo(overhit_keys=("2",))
-    controller.capture = lambda: (1., 0. if (2, "F3") in controller.events else .01, False)
+    controller.capture = lambda: (1., 0. if (2, "F3") in controller.events else .007, False)
     duo.fight(.01)
     assert controller.events.index((1, "2")) < controller.events.index((2, "F3"))
     assert controller.events.count((2, "F3")) == 1
@@ -234,7 +253,8 @@ def test_dead_farmer_uses_inherited_resurrection_wait(monkeypatch):
 
 def test_full_cycle_returns_to_farmer_and_loots_only_after_death():
     duo, controller = make_duo()
-    controller.capture = lambda: (1., 0. if (2, "F3") in controller.events else .9, False)
+    controller.capture = lambda: (1., 0. if (2, "F3") in controller.events else
+                                 .8 if duo.attacking else .9, False)
     duo.run()
     keys = [event for event in controller.events if isinstance(event[0], int)]
     assert keys == [(2, "F1"), (2, "F2"), (1, "3"), (1, "R"), (2, "F3"),
@@ -252,7 +272,7 @@ def test_real_cycle_heals_before_support_and_observes_death_before_loot():
         attacked = (1, "R") in controller.events
         healed = (2, "F4") in controller.events
         assisted = (2, "F3") in controller.events
-        return (.4 if attacked and not healed else .9, 0. if assisted else .9, assisted)
+        return (.4 if attacked and not healed else .9, 0. if assisted else .8 if attacked else .9, assisted)
 
     controller.capture = capture
     duo.run()
@@ -272,7 +292,7 @@ def test_buff_waits_without_attack_when_hp_is_low_but_not_falling():
     assert (2, "F3") not in controller.events
     assert (2, "F1") in controller.events
     assert controller.events[-2:] == [(2, "F2"), ("window", 1)]
-    assert duo.next_buff == 19 * 60
+    assert duo.next_buff == duo.support_buff_started + 19 * 60
 
 
 def test_damage_before_buff_starts_attack_but_healthy_ma_allows_buff():
@@ -291,7 +311,7 @@ def test_rebuff_runs_at_configured_active_time_boundary():
     duo, controller = make_duo(rebuff_minutes=7)
     duo.observe()
     duo.buff()
-    assert duo.next_buff == 7 * 60
+    assert duo.next_buff == duo.support_buff_started + 7 * 60
     controller.now = duo.next_buff - .01
     duo.protect()
     assert controller.events.count((2, "F1")) == 1
@@ -300,7 +320,7 @@ def test_rebuff_runs_at_configured_active_time_boundary():
     assert controller.events.count((2, "F1")) == 1
     duo.cast_buffs()
     assert controller.events.count((2, "F1")) == 2
-    assert duo.next_buff == 14 * 60
+    assert duo.next_buff == duo.support_buff_started + 7 * 60
 
 
 def test_rebuff_restarts_interrupted_cycle():
@@ -467,7 +487,7 @@ def test_prepare_requires_distinct_windows_and_farmer_profile(tmp_path):
     (tmp_path / "farmer").mkdir()
     path = tmp_path / "farmer" / "farm-bars.json"
     path.write_text(BarProfile(width=100, height=100).model_dump_json(), encoding="utf-8")
-    with pytest.raises(ValueError, match="HP/MP фармера"):
+    with pytest.raises(ValueError, match="HP/MP МА"):
         prepare_duo(tmp_path, FARMER, SUPPORT)
 
 
@@ -528,63 +548,63 @@ def test_failed_activation_retry_stops_without_destination_arm(monkeypatch):
     monkeypatch.setattr("hid_pilot.controller.activate", request)
     with pytest.raises(RuntimeError, match="подтвердить фокус"):
         controller.switch_window(SUPPORT)
-    assert request.call_count == 2
+    assert request.call_count == 1
     assert controller.stopped.is_set()
     assert controller.desktop.target == FARMER
     transport.arm.assert_not_called()
 
 
-def test_window_activation_succeeds_on_third_attempt(monkeypatch):
+def test_window_activation_succeeds_on_first_attempt_without_reset(monkeypatch):
     controller, destination, transport = switch_controller(monkeypatch)
     monkeypatch.setattr("hid_pilot.controller.activate", Mock(side_effect=ActivationDenied("отказ")))
-    helper = Mock(side_effect=[RuntimeError("Windows не подтвердила foreground")] * 2 + [None])
+    helper = Mock()
     monkeypatch.setattr("hid_pilot.controller.request_activation", helper)
     monkeypatch.setattr(controller.stopped, "wait", lambda seconds: False)
     controller.switch_window(SUPPORT)
-    assert helper.call_count == 3
+    assert helper.call_count == 1
+    transport.reset_session.assert_not_called()
     assert not controller.stopped.is_set()
     assert controller.desktop is destination
     transport.arm.assert_called_once_with()
     transport.hold.assert_not_called()
 
 
-def test_three_failed_activation_attempts_stop_without_arm(monkeypatch):
+def test_one_failed_activation_attempt_stop_without_arm(monkeypatch):
     controller, _, transport = switch_controller(monkeypatch)
     monkeypatch.setattr("hid_pilot.controller.activate", Mock(side_effect=ActivationDenied("отказ")))
     helper = Mock(side_effect=RuntimeError("Windows не подтвердила foreground"))
     monkeypatch.setattr("hid_pilot.controller.request_activation", helper)
     monkeypatch.setattr(controller.stopped, "wait", lambda seconds: False)
-    with pytest.raises(RuntimeError, match="после 3 попыток"):
+    with pytest.raises(RuntimeError, match="восстановить фокус"):
         controller.switch_window(SUPPORT)
-    assert helper.call_count == 4
-    assert helper.call_args.kwargs == {}
+    assert helper.call_count == 2
+    assert helper.call_args.kwargs == {"strategy": "attached_focus"}
     assert controller.stopped.is_set()
     transport.arm.assert_not_called()
 
 
-def test_session_reset_succeeds_after_three_foreground_failures(monkeypatch):
+def test_session_reset_succeeds_after_one_foreground_failure(monkeypatch):
     controller, destination, transport = switch_controller(monkeypatch)
     monkeypatch.setattr("hid_pilot.controller.activate", Mock(side_effect=ActivationDenied("отказ")))
-    helper = Mock(side_effect=[RuntimeError("Windows не подтвердила foreground")] * 3 + [None])
+    helper = Mock(side_effect=[RuntimeError("Windows не подтвердила foreground")] + [None])
     monkeypatch.setattr("hid_pilot.controller.request_activation", helper)
     monkeypatch.setattr(controller.stopped, "wait", lambda seconds: False)
     controller.switch_window(SUPPORT)
-    assert helper.call_count == 4
-    assert all(not call.kwargs for call in helper.call_args_list[:3])
-    assert helper.call_args.kwargs == {}
+    assert helper.call_count == 2
+    assert all(not call.kwargs for call in helper.call_args_list[:1])
+    assert helper.call_args.kwargs == {"strategy": "attached_focus"}
     assert controller.desktop is destination
     assert not controller.stopped.is_set()
     transport.hold.assert_not_called()
     transport.arm.assert_called_once_with()
 
 
-def test_stop_on_third_failure_prevents_reserve_strategy(monkeypatch):
+def test_stop_on_first_failure_prevents_reserve_strategy(monkeypatch):
     controller, _, transport = switch_controller(monkeypatch)
     monkeypatch.setattr("hid_pilot.controller.activate", Mock(side_effect=ActivationDenied("отказ")))
 
     def failure(*args, **kwargs):
-        if helper.call_count == 3:
-            controller.stopped.set()
+        controller.stopped.set()
         raise RuntimeError("Windows не подтвердила foreground")
 
     helper = Mock(side_effect=failure)
@@ -592,17 +612,17 @@ def test_stop_on_third_failure_prevents_reserve_strategy(monkeypatch):
     monkeypatch.setattr(controller.stopped, "wait", lambda seconds: False)
     with pytest.raises(Stopped):
         controller.switch_window(SUPPORT)
-    assert helper.call_count == 3
+    assert helper.call_count == 1
     assert all(not call.kwargs for call in helper.call_args_list)
     transport.arm.assert_not_called()
 
 
-def test_stop_between_activation_attempts_aborts_retries(monkeypatch):
+def test_stop_during_release_aborts_recovery(monkeypatch):
     controller, _, transport = switch_controller(monkeypatch)
     monkeypatch.setattr("hid_pilot.controller.activate", Mock(side_effect=ActivationDenied("отказ")))
     helper = Mock(side_effect=RuntimeError("Windows не подтвердила foreground"))
     monkeypatch.setattr("hid_pilot.controller.request_activation", helper)
-    monkeypatch.setattr(controller.stopped, "wait", lambda seconds: controller.stopped.set())
+    controller.transport.release.side_effect = controller.stopped.set
     with pytest.raises(Stopped):
         controller.switch_window(SUPPORT)
     assert helper.call_count == 1

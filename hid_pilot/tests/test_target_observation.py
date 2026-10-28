@@ -1,10 +1,35 @@
 from unittest.mock import Mock
+from pathlib import Path
+import cv2
 
 import numpy as np
 import pytest
 
 from hid_pilot.bars import BarBox, BarProfile
 from hid_pilot.target import TargetReader
+
+
+def test_real_skull_template_distinguishes_living_portrait():
+    root = Path(__file__).parent / "fixtures"
+    dead = cv2.imread(str(root / "target-portrait-dead.png"))
+    alive = cv2.imread(str(root / "target-portrait-alive.png"))
+    h, w = dead.shape[:2]
+    config = BarProfile(width=w, height=h)
+    config.calibrate_dead_marker(dead, BarBox(x1=0, y1=0, x2=1, y2=1))
+    assert config.dead_marker_visible(dead)
+    assert not config.dead_marker_visible(alive)
+    assert type(config.dead_marker_visible(dead)) is bool
+    assert type(config.dead_marker_visible(alive)) is bool
+
+
+@pytest.mark.parametrize("hp,expected", [(np.float64(0), True), (np.float64(.5), False)])
+def test_death_comparison_returns_serializable_python_bool(hp, expected):
+    from hid_pilot.target import TargetObservation
+
+    dead = TargetReader.death(hp, False)
+    assert dead is expected
+    observation = TargetObservation(at=0).model_copy(update={"dead": dead})
+    assert observation.model_dump(mode="json")["dead"] is expected
 
 
 def row(text, y, score=.99):
@@ -99,7 +124,7 @@ def dead_image():
     return image
 
 
-def test_calibrated_red_skull_supports_death_but_never_overrides_positive_hp():
+def test_calibrated_red_skull_confirms_death_even_with_positive_ocr_hp():
     config = profile()
     image = dead_image()
     config.calibrate_dead_marker(image, BarBox(x1=10 / 423, y1=10 / 126, x2=58 / 423, y2=58 / 126))
@@ -110,7 +135,7 @@ def test_calibrated_red_skull_supports_death_but_never_overrides_positive_hp():
     assert target.kind == "monster" and target.hp is None
     ocr.detect.return_value = [row("Gremlin", 5), row("10 / 58", 80)]
     target = TargetReader(config).read(image, 2., ocr)
-    assert target.death_marker and target.dead is False
+    assert target.death_marker and target.dead is True
     assert not config.dead_marker_visible(np.zeros_like(image))
 
 

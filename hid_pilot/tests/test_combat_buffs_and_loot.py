@@ -21,7 +21,7 @@ def test_due_self_buff_starts_inside_continuous_fight():
     state[:] = [.8, 1., .9]
     original_key = controller.key.side_effect
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         original_key(name, duration)
         if name == "NUM9":
             state[2] = 0.

@@ -43,7 +43,7 @@ class TargetObservation(BaseModel):
     kind: Literal["player", "npc", "monster", "unknown"] = "unknown"
     name: str | None = None
     raw_name: str | None = None
-    name_confirmations: int = Field(default=0, ge=0, le=6)
+    name_confirmations: int = Field(default=0, ge=0, le=3)
     level: int | None = Field(default=None, ge=1, le=150)
     player_class: str | None = None
     clan: str | None = None
@@ -56,6 +56,7 @@ class TargetObservation(BaseModel):
 
 class TargetReader:
     def __init__(self, profile: BarProfile) -> None:
+        self.identity_only = False
         self.profile = profile
         self.cached_signature: bytes | None = None
         self.cached: TargetObservation | None = None
@@ -134,7 +135,7 @@ class TargetReader:
                     strip_present = False
             if hp is None and fill is not None:
                 hp = fill
-        if hp is None and "target_hp" in self.profile.numbers:
+        if not self.identity_only and hp is None and "target_hp" in self.profile.numbers:
             # Имя находится выше HP и может быть размечено отдельным прямоугольником.
             numeric_hp = (reader or shared_numbers()).read(
                 self.profile.crop(image, self.profile.numbers["target_hp"]))
@@ -152,7 +153,17 @@ class TargetReader:
             values.update(name=names[0][1], confidence=names[0][2])
             configured = {name.casefold(): kind for name, kind in self.profile.target_kind_names.items()}
             known_kind = configured.get(names[0][1].casefold())
-            if known_kind is not None:
+            if known_kind in {"player", "npc"}:
+                values["kind"] = known_kind
+            elif (len(names) in {2, 3}
+                    and names[1][0] - names[0][0] > 5
+                    and not any(char.isdigit() for char in names[1][1])):
+                # Панель имени/класса/клана приоритетнее совпадения ника с именем моба.
+                values.update(kind="player", player_class=names[1][1],
+                              clan=names[2][1] if len(names) == 3 else None,
+                              confidence=min(names[0][2], names[1][2]))
+                self.last_player_name = names[0][1]
+            elif known_kind is not None:
                 values["kind"] = known_kind
             elif len(names) == 1 and (len(numbers) == 1 or marker or strip_present is True):
                 # По подтверждённому пользователем UI одна строка с полосой HP — монстр.
@@ -162,13 +173,6 @@ class TargetReader:
             elif (len(names) == 1 and strip_present is False
                   and names[0][1] not in {self.last_player_name, self.last_monster_name}):
                 values["kind"] = "npc"
-            elif (len(names) in {2, 3}
-                  and names[1][0] - names[0][0] > 5
-                  and not any(char.isdigit() for char in names[1][1])):
-                values.update(kind="player", player_class=names[1][1],
-                              clan=names[2][1] if len(names) == 3 else None,
-                              confidence=min(names[0][2], names[1][2]))
-                self.last_player_name = names[0][1]
             if values.get("kind") == "monster":
                 self.last_monster_name = names[0][1]
         result = TargetObservation(**values)
@@ -178,5 +182,7 @@ class TargetReader:
 
     @staticmethod
     def death(hp: float | None, marker: bool) -> bool | None:
-        # Читаемые ненулевые HP приоритетнее совпадения красного портрета.
-        return hp == 0 if hp is not None else (True if marker else None)
+        # Нулевое HP ИЛИ калиброванный череп независимо означают смерть.
+        if marker:
+            return True
+        return bool(hp == 0) if hp is not None else None

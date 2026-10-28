@@ -24,7 +24,7 @@ def test_ma_and_healer_cast_buffs_concurrently():
     sent = []
     original_key = controller.key
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         sent.append((controller.role.hwnd, name, controller.now))
         original_key(name, duration)
 
@@ -48,16 +48,16 @@ def test_support_damage_interrupts_only_ma_buff_and_support_finishes_macro(monke
     )
     duo.config = duo.config.model_copy(update={"buff_seconds": 15})
     healed = [False]
-    reader.side_effect = lambda *args: .9 if healed[0] else (.3 if controller.now >= .5 else 1.)
+    reader.side_effect = lambda *args: .9 if healed[0] else (.4 if controller.now >= 1.5 else 1.)
     original_key = controller.key
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         original_key(name, duration)
         if controller.role.hwnd == 2 and name == "F2":
             healed[0] = True
 
     controller.key = key
-    controller.capture = lambda: (.4 if controller.now >= .5 else 1., .9, False)
+    controller.capture = lambda: (.4 if controller.now >= 1.5 else 1., .9, False)
     duo.cast_buffs()
     events = controller.events
     assert events.index((1, "2")) < events.index((1, duo.config.attack))

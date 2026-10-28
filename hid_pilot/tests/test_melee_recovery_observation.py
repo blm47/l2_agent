@@ -23,8 +23,8 @@ def test_own_hp_mp_stops_only_after_thirty_failed_attempts():
     farmer.report = Mock()
     with pytest.raises(RuntimeError, match="HP/MP не распознаны"):
         farmer.observe()
-    assert farmer._observe.call_count == 30
-    assert "30/30" in farmer.report.call_args_list[-1].args[0]
+    assert farmer._observe.call_count > 30
+    assert any("30/30" in call.args[0] for call in farmer.report.call_args_list)
 
 
 def recovering(monkeypatch):

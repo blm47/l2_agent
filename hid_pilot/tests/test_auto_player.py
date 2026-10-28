@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 
 from hid_pilot.auto_player import find_player_panels
 
@@ -18,6 +19,7 @@ def test_auto_player_groups_screenshot_layout_and_excludes_own_stats():
     assert len(candidates) == 1
     assert "originalNutta / Hawkeye / AES" in candidates[0].evidence
     assert candidates[0].box.x1 == 159 / 1200
+    assert candidates[0].box.x2 == pytest.approx((288 + (288 - 159) * .6) / 1200)
     assert candidates[0].box.y2 == 70 / 800
     assert reader.detect.call_args.args[0].shape[0] == 240
 

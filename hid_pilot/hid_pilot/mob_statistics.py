@@ -18,6 +18,7 @@ class MobStatistics:
         self.next_report = started + 60
         self.counts: Counter[str] = Counter()
         self.minute_count = 0
+        self.unconfirmed_kills = 0
         self.previous: TargetObservation | None = None
         self.armed = False
         self.dead_frames = 0
@@ -46,7 +47,15 @@ class MobStatistics:
     def summary(self, now: float) -> str:
         elapsed = max(0, int(now - self.started))
         names = self.ranked_counts()
-        return f"ФАРМ — {elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}; подтверждено убийств: {sum(self.counts.values())}\n{names}"
+        return (f"ФАРМ — {elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}; "
+                f"подтверждено убийств: {sum(self.counts.values())}; "
+                f"не подтверждено убийств: {self.unconfirmed_kills}\n{names}")
+
+    def record_unconfirmed_kill(self) -> None:
+        """
+        Учитывает завершение боя без подтверждения смерти отдельно от убийств.
+        """
+        self.unconfirmed_kills += 1
 
     def ranked_counts(self) -> str:
         """
@@ -111,6 +120,7 @@ class MobStatistics:
         elapsed = max(0, int(now - self.started))
         names = self.ranked_counts()
         message = (f"Мобы по таргету: всего {sum(self.counts.values())}, за последний интервал {self.minute_count}; "
+                   f"не подтверждено убийств: {self.unconfirmed_kills}; "
                    f"время {elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}\n{names}")
         logger.info(message)
         self.minute_count = 0

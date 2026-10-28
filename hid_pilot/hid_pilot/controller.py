@@ -13,6 +13,7 @@ from hid_pilot.mouse_path import mouse_path
 from hid_pilot.script import KEYS
 from hid_pilot.transport import PicoTransport
 from hid_pilot.window_activation import request_activation
+from hid_pilot.keyboard_layout import ensure_english_layout
 
 logger = logging.getLogger("hid_pilot.controller")
 
@@ -42,6 +43,8 @@ class ActionController:
         self.monitor: threading.Thread | None = None
         self.error = ""
         self.humanize = False
+        self.debug_capture = False
+        self.activation_strategies: dict[tuple[int, int, int, int], str] = {}
 
     def check(self) -> None:
         if self.stopped.is_set():
@@ -57,6 +60,25 @@ class ActionController:
                 self.transport.arm()
         self.monitor = threading.Thread(target=self._watch, daemon=True)
         self.monitor.start()
+
+    def prepare_keyboard(self, targets: tuple[Target, ...]) -> None:
+        """
+        Проверяет раскладку всех игровых окон до первого ARM.
+        """
+        def verify() -> None:
+            self.check()
+            if self.manual_paused.is_set():
+                raise Stopped("Подготовка раскладки отменена ручной паузой")
+
+        with self.lock:
+            try:
+                self.transport.stop()
+                for target in targets:
+                    ensure_english_layout(target, self.stopped, verify)
+                    self.notify(f"Раскладка «{target.title}»: ENG подтверждена")
+            except Exception:
+                self.stop()
+                raise
 
     def _watch(self) -> None:
         while not self.stopped.wait(0.025):
@@ -167,48 +189,57 @@ class ActionController:
                     raise RuntimeError("Окно или его геометрия изменились")
                 self.transport.stop()
                 used_helper = False
+                source = self.desktop.target
+                route = (source.hwnd, source.pid, target.hwnd, target.pid)
+                strategy = self.activation_strategies.get(route, "direct")
 
                 def fallback() -> None:
-                    for attempt in range(1, 4):
+                    self.check()
+                    if self.manual_paused.is_set():
+                        raise Stopped("Переключение отменено ручной паузой")
+                    current = snapshot(target.hwnd)
+                    if (current.pid, current.rect) != (target.pid, target.rect):
+                        raise RuntimeError("Окно или его геометрия изменились")
+                    message = f"Активация «{target.title}»: helper foreground"
+                    logger.info(message)
+                    self.notify(message)
+                    try:
+                        request_activation(
+                            self.desktop.target, target, self.stopped,
+                            lambda: self.hard_stop_ready() and not self.manual_paused.is_set(), timeout,
+                        )
+                        self.activation_strategies[route] = "foreground"
+                    except RuntimeError as exc:
+                        # Отмена и уход пользователя из игры не являются поводом
+                        # перехватывать фокус ещё раз.
                         self.check()
                         if self.manual_paused.is_set():
-                            raise Stopped("Переключение отменено ручной паузой")
-                        current = snapshot(target.hwnd)
-                        if (current.pid, current.rect) != (target.pid, target.rect):
-                            raise RuntimeError("Окно или его геометрия изменились")
-                        message = f"Активация «{target.title}»: попытка {attempt}/3"
-                        logger.info(message)
-                        self.notify(message)
+                            raise Stopped("Переключение отменено ручной паузой") from exc
+                        logger.warning("Foreground не сработал; восстанавливаем фокус без сброса COM: %s", exc)
                         try:
-                            request_activation(
-                                self.desktop.target, target, self.stopped,
-                                lambda: self.hard_stop_ready() and not self.manual_paused.is_set(), timeout,
-                            )
-                            return
-                        except RuntimeError as exc:
-                            # Отмена и уход пользователя из игры не являются поводом
-                            # перехватывать фокус ещё раз.
-                            self.check()
-                            if self.manual_paused.is_set():
-                                raise Stopped("Переключение отменено ручной паузой") from exc
-                            logger.warning("Попытка активации %s/3 не удалась: %s", attempt, exc)
-                            if attempt == 3:
-                                try:
-                                    self._reset_and_activate(target, timeout)
-                                except RuntimeError as reset_error:
-                                    raise RuntimeError(
-                                        f"Не удалось активировать «{target.title}» после 3 попыток "
-                                        f"и сброса COM/HID-сессии: {reset_error}"
-                                    ) from reset_error
-                                return
-                            self.stopped.wait(.1)
+                            self.activation_strategies[route] = "attached_focus"
+                            self._recover_focus(target, timeout)
+                        except RuntimeError as reset_error:
+                            raise RuntimeError(
+                                f"Не удалось восстановить фокус «{target.title}»: {reset_error}"
+                            ) from reset_error
 
-                try:
-                    activate(target)
-                except ActivationDenied:
-                    logger.info("Прямой запрос фокуса отклонён: переключение через изолированный helper")
+                if strategy == "alt_tab":
+                    self._alt_tab_activate(target)
+                    used_helper = True
+                elif strategy == "attached_focus":
+                    self._recover_focus(target, timeout)
+                    used_helper = True
+                elif strategy == "foreground":
                     fallback()
                     used_helper = True
+                else:
+                    try:
+                        activate(target)
+                    except ActivationDenied:
+                        logger.info("Прямой запрос фокуса отклонён: переключение через изолированный helper")
+                        fallback()
+                        used_helper = True
                 destination = Desktop(target)
                 deadline = time.monotonic() + timeout
                 while True:
@@ -241,32 +272,71 @@ class ActionController:
         with self.lock:
             self.transport.stop()
 
-    def _reset_and_activate(self, target: Target, timeout: float) -> None:
+    def release_inputs(self) -> None:
         """
-        Переоткрывает COM/HID без игровых команд, сохраняя состояние сценария.
+        Отпускает весь ввод перед ожиданием восстановления наблюдения.
+        """
+        self.checkpoint()
+        with self.lock:
+            self.transport.release()
+
+    def _recover_focus(self, target: Target, timeout: float) -> None:
+        """
+        Восстанавливает foreground без переоткрытия исправного COM/HID.
         """
         self.check()
         if self.manual_paused.is_set():
-            raise Stopped("Сброс сессии отменён ручной паузой")
-        message = "3 отказа активации: сброс COM/HID-сессии Pico без ALT+TAB"
+            raise Stopped("Восстановление фокуса отменено ручной паузой")
+        message = "Восстановление фокуса через attached_focus; COM/HID-сессия сохранена"
         logger.info(message)
         self.notify(message)
-        self.transport.reset_session()
-        self.pause_generation += 1
-        self.check()
-        if self.manual_paused.is_set():
-            raise Stopped("Сброс сессии отменён ручной паузой")
         self._ensure_alt_released()
         current = snapshot(target.hwnd)
         if (current.pid, current.rect) != (target.pid, target.rect):
-            raise RuntimeError("Целевое окно изменилось при сбросе сессии")
+            raise RuntimeError("Целевое окно изменилось при восстановлении фокуса")
         try:
-            activate(target)
-        except ActivationDenied:
             request_activation(
                 self.desktop.target, target, self.stopped,
                 lambda: self.hard_stop_ready() and not self.manual_paused.is_set(), timeout,
+                strategy="attached_focus",
             )
+        except RuntimeError:
+            if self.transport.supports_alt_tab is not True:
+                raise
+            self._alt_tab_activate(target)
+            source = self.desktop.target
+            self.activation_strategies[(source.hwnd, source.pid, target.hwnd, target.pid)] = "alt_tab"
+
+    def _alt_tab_activate(self, target: Target) -> None:
+        """
+        Последний резерв: Alt+Tab в disarmed, RELEASE и проверка перед ARM.
+        """
+        self.check()
+        self._ensure_alt_released()
+        current = snapshot(target.hwnd)
+        if (current.pid, current.rect) != (target.pid, target.rect):
+            raise RuntimeError("Целевое окно изменилось перед ALT+TAB")
+        message = "Восстановление фокуса не помогло: резервный ALT+TAB с проверкой отпускания ALT"
+        logger.warning(message)
+        self.notify(message)
+        self.transport.stop()
+        try:
+            self.transport.window_switch()
+            # SWITCH подтверждает отправку, а не окончание 80 мс удержания.
+            if self.stopped.wait(.08):
+                raise Stopped("ALT+TAB отменён остановкой")
+        finally:
+            # Даже ошибка SWITCH или STOP обязаны вызвать попытку key-up.
+            self.transport.release()
+        self._ensure_alt_released()
+        if self.stopped.wait(.2):
+            raise Stopped("Остановка после ALT+TAB")
+        # Повторная проверка после задержки исключает поздний ALT-down.
+        self._ensure_alt_released()
+        try:
+            Desktop(target).check()
+        except FocusLost as exc:
+            raise RuntimeError("ALT+TAB не выбрал нужное окно; игровые нажатия заблокированы") from exc
 
     def close(self) -> None:
         self.stopped.set()
@@ -484,10 +554,10 @@ class ActionController:
             with self.lock:
                 self.transport.release()
 
-    def key(self, name: str, duration: int) -> None:
+    def key(self, name: str, duration: int, *, exact: bool = False) -> None:
         if name not in KEYS or not 1 <= duration <= (3000 if self.transport.protocol == "HID_PILOT_V4" else 1000):
             raise ValueError("Недопустимая клавиша или длительность")
-        if self.humanize and duration <= 200:
+        if self.humanize and not exact and duration <= 200:
             duration = random.randint(max(1, round(duration * .7)), round(duration * 1.3))
         self._hold("KEY", name, duration)
 

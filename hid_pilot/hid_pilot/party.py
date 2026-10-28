@@ -70,6 +70,27 @@ class PartyMember(BaseModel):
         return f"@slot{self.slot}"
 
 
+def read_party_bars(image: np.ndarray, profile: PartyProfile,
+                    metadata: list[PartyMember] | None = None) -> list[PartyMember]:
+    """
+    Читает ресурсы текущего кадра без OCR, сохраняя проверенную идентичность строк.
+    """
+    cropper = BarProfile(width=profile.width, height=profile.height)
+    known = {member.slot: member for member in metadata or []}
+    members = []
+    for slot in range(8):
+        values = {kind: bar_fraction(cropper.crop(image, profile.box(kind, slot)), kind)
+                  for kind in ("cp", "hp", "mp")}
+        member = known.get(slot + 1)
+        present = sum(value is not None for value in values.values()) >= 2
+        if not present and (member is None or not member.name):
+            continue
+        if member is None:
+            member = PartyMember(slot=slot + 1)
+        members.append(member.model_copy(update=values))
+    return members
+
+
 def read_party(image: np.ndarray, profile: PartyProfile,
                reader: NumbersReader) -> list[PartyMember]:
     cropper = BarProfile(width=profile.width, height=profile.height)

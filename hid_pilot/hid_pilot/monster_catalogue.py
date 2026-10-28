@@ -61,6 +61,16 @@ class MonsterNameConsensus:
         self.saved = False
         self.votes: deque[tuple[float, str]] = deque(maxlen=12)
 
+    def reset_target(self) -> None:
+        """
+        Начинает подтверждения новой цели без голосов предыдущего моба.
+        """
+        self.pending = None
+        self.confirmations = 0
+        self.last_valid_at = float("-inf")
+        self.saved = False
+        self.votes.clear()
+
     def observe(self, observation: TargetObservation, now: float) -> TargetObservation:
         if observation.at <= self.last_at:
             return observation.model_copy(update={"name": None, "confidence": 0})
@@ -82,10 +92,10 @@ class MonsterNameConsensus:
         counts = Counter(key for _, key in self.votes)
         dominant = counts[name.casefold()] / len(self.votes) >= .7
         self.last_valid_at = observation.at
-        self.confirmations = min(6, counts[name.casefold()])
-        # Сначала два одинаковых чтения, затем сверка; новые имена требуют шести.
+        self.confirmations = min(3, counts[name.casefold()])
+        # Сначала два одинаковых чтения, затем сверка; новые имена требуют трёх.
         canonical = self.catalogue.lookup(name) if self.confirmations >= 2 and dominant else None
-        if self.confirmations >= 6 and dominant and not self.saved:
+        if self.confirmations >= 3 and dominant and not self.saved:
             canonical = self.catalogue.confirm(name, observation.level)
             self.saved = canonical is not None
         return observation.model_copy(update={"name": canonical, "raw_name": name,

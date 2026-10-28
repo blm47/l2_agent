@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from hid_pilot.bars import BarBox
-from hid_pilot.party import PartyProfile, party_text, read_party
+from hid_pilot.party import PartyMember, PartyProfile, party_text, read_party, read_party_bars
 
 
 def profile():
@@ -56,6 +56,23 @@ def test_party_unknown_name_with_visible_bars():
     image, reader = scene(1)
     reader.detect.return_value = []
     assert read_party(image, profile(), reader)[0].name is None
+
+
+def test_fast_party_resources_use_current_frame_instead_of_old_ocr_values():
+    image, _ = scene(1)
+    old = PartyMember(slot=1, name="Member0", confidence=.99, hp=1., mp=1.)
+    member = read_party_bars(image, profile(), [old])[0]
+    assert (member.hp, member.mp) == (.5, .25)
+    assert member.name == "Member0"
+    assert member.model_dump(mode="json")["hp"] == .5
+
+
+def test_fast_party_without_ocr_still_returns_visible_members():
+    image, _ = scene(1)
+    members = read_party_bars(image, profile())
+    assert len(members) == 1
+    assert members[0].name is None
+    assert members[0].hp == .5
 
 
 @pytest.mark.parametrize("name", ["Chylli", None])

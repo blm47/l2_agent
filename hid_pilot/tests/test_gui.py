@@ -26,6 +26,29 @@ def isolated_window_layout(monkeypatch, tmp_path):
     monkeypatch.setattr("hid_pilot.__main__.user_data_dir", lambda: tmp_path)
 
 
+def test_start_and_debug_start_select_separate_session_modes(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    window = MainWindow()
+    try:
+        window.tabs.setCurrentIndex(1)
+        window.launch = Mock()
+        window.debug_start_button.click()
+        window.launch.assert_called_once_with(debug=True)
+        window.launch.reset_mock()
+        window.start_button.click()
+        window.launch.assert_called_once_with(debug=False)
+        window.start_button.setEnabled(False)
+        window.debug_start_button.setEnabled(False)
+        window.finished()
+        assert window.start_button.isEnabled()
+        assert window.debug_start_button.isEnabled()
+        app.processEvents()
+    finally:
+        window.close()
+
+
 def test_pause_and_stop_do_not_wait_for_controller_lock(monkeypatch):
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *args: Mock(available=True))
@@ -191,6 +214,9 @@ def test_script_end_notifies_telegram_once_after_input_cleanup(monkeypatch, tmp_
             controller.close.assert_not_called()
         else:
             controller.close.assert_called_once()
+            controller.prepare_keyboard.assert_called_once_with((target,))
+            methods = [call[0] for call in controller.method_calls]
+            assert methods.index("prepare_keyboard") < methods.index("start")
         if failure in {"button", "button_before_start", "manual", "hotkey"}:
             window.telegram.notify_stopped.assert_not_called()
             return

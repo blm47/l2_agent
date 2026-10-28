@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from hid_pilot.controller import ActionController, Stopped
-from hid_pilot.duo import DuoFarmer, prepare_duo, load_duo_party
+from hid_pilot.duo import DuoFarmer, SupportDied, prepare_duo, load_duo_party
 from hid_pilot.duo_panel import DuoPanel
 from hid_pilot.farm_settings import FarmSettings
 from hid_pilot.desktop import Desktop, Target, activate, snapshot, windows
@@ -40,9 +41,11 @@ from hid_pilot.party_panel import PartyPanel
 from hid_pilot.party_statistics import format_statistics
 from hid_pilot.paths import example_scripts_dir, user_data_dir
 from hid_pilot.quick_panel import QuickPanel
+from hid_pilot.replay import FarmReplay
 from hid_pilot.runner import Runner
 from hid_pilot.script import parse_script, script_variables
 from hid_pilot.session import match_session_window
+from hid_pilot.support_life import SupportLifeObserver
 from hid_pilot.duo import parse_duo_settings
 from hid_pilot.transport import PicoTransport
 
@@ -51,6 +54,7 @@ logger = logging.getLogger("hid_pilot.gui")
 
 class Events(QObject):
     status = Signal(str)
+    replay_status = Signal(str)
     finished = Signal()
     auto_found = Signal(object)
     observation = Signal(object)
@@ -60,13 +64,17 @@ class Events(QObject):
 
 class ScriptNotifications:
     def __init__(self, events: Events, telegram: TelegramNotifier | None = None,
-                 script: str = "", window: str = "", duo_mode: bool = False) -> None:
+                 script: str = "", window: str = "", duo_mode: bool = False,
+                 replay: FarmReplay | None = None, support_window: str = "") -> None:
         self.events = events
         self.telegram = telegram
         self.script = script
         self.window = window
         self.dead = False
         self.duo_mode = duo_mode
+        self.replay = replay
+        self.support_window = support_window
+        self.support_dead = False
 
     def __call__(self, text: str) -> None:
         self.events.status.emit(text)
@@ -81,11 +89,34 @@ class ScriptNotifications:
         if self.dead:
             return
         self.dead = True
+        reason = "Смерть МА" if self.duo_mode else "Смерть персонажа"
+        self._notify_death(PlayerDied(self.script, self.window, "МА" if self.duo_mode else ""), reason)
+
+    def _notify_death(self, event: PlayerDied, reason: str) -> None:
+        video = Future() if self.replay is not None and self.telegram is not None else None
         if self.telegram is not None:
-            self.telegram.notify_death(PlayerDied(self.script, self.window))
+            if video is None:
+                self.telegram.notify_death(event)
+            else:
+                self.telegram.notify_death(event, video=video)
+        if self.replay is not None:
+            if video is None:
+                self.replay.trigger(reason, death=True)
+            else:
+                self.replay.trigger(reason, death=True, completion=video)
 
     def revived(self) -> None:
         self.dead = False
+
+    def support_death(self) -> None:
+        if self.support_dead:
+            return
+        self.support_dead = True
+        self.events.status.emit("Саппорт умер: подтверждены HP=0 или кнопка To Village")
+        self._notify_death(PlayerDied(self.script, self.support_window, "Саппорт"), "Смерть саппорта")
+
+    def support_revived(self) -> None:
+        self.support_dead = False
 
 
 class MainWindow(QMainWindow):
@@ -107,6 +138,8 @@ class MainWindow(QMainWindow):
         self.firmware_open = False
         self.events = Events()
         self.events.status.connect(self.show_status)
+        self.events.replay_status.connect(self.show_replay_status)
+        self.replay = FarmReplay(user_data_dir() / "obs-replay.toml", self.events.replay_status.emit)
         self.events.finished.connect(self.finished)
         self.events.auto_found.connect(self.review_auto_numbers)
         self.events.observation.connect(self.show_observation)
@@ -139,9 +172,11 @@ class MainWindow(QMainWindow):
                             lambda: self.auto_busy or (self.worker is not None and self.worker.is_alive()),
                             self.show_status)
         self.duo.setup_requested.connect(self.setup_duo)
+        for panel in self.duo.panels.values():
+            panel.summon_requested.connect(lambda panel=panel: self.auto_numbers(panel=panel, manual_summon=True))
         self.events.duo_observation.connect(self.duo.show_observation)
         self.events.duo_statistics.connect(self.duo.show_statistics)
-        self.tabs.addTab(self.duo, "Два окна")
+        self.tabs.addTab(self.duo, "Дуо: МА + саппорт")
         layout.addWidget(self.tabs, 1)
         self.editor = QPlainTextEdit("# Безопасный первый сценарий без ввода\nwait 1\n")
         self.editor.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
@@ -182,6 +217,7 @@ class MainWindow(QMainWindow):
         self.party.setup_requested.connect(self.auto_numbers)
         self.party.manual_requested.connect(lambda: self.auto_numbers(manual_party=True))
         self.party.own_requested.connect(lambda: self.auto_numbers(manual_stats=True))
+        self.party.summon_requested.connect(lambda: self.auto_numbers(manual_summon=True))
         self.auto_scope = QComboBox()
         self.auto_scope.addItem("Верхняя часть окна", True)
         self.auto_scope.addItem("Всё окно", False)
@@ -196,6 +232,14 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("START")
         self.start_button.clicked.connect(self.start)
         row.addWidget(self.start_button)
+        self.record_video = QCheckBox("Вести запись")
+        self.record_video.setChecked(self.layout_settings.value("record_video", False, type=bool))
+        self.record_video.toggled.connect(lambda checked: self.layout_settings.setValue("record_video", checked))
+        row.addWidget(self.record_video)
+        self.debug_start_button = QPushButton("ДебагСтарт")
+        self.debug_start_button.setToolTip("Запуск с сохранением кадров ошибок цели, уровней и HP/MP")
+        self.debug_start_button.clicked.connect(lambda: self.start(debug=True))
+        row.addWidget(self.debug_start_button)
         pause = QPushButton("PAUSE / RESUME")
         pause.clicked.connect(self.toggle_pause)
         row.addWidget(pause)
@@ -203,6 +247,9 @@ class MainWindow(QMainWindow):
         stop.clicked.connect(self.stop_from_button)
         row.addWidget(stop)
         layout.addLayout(row)
+        self.replay_status = QLabel("Запись выключена")
+        self.replay_status.setWordWrap(True)
+        layout.addWidget(self.replay_status)
         self.status = QLabel("Готово" if self.hotkey.available else self.hotkey.error)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -337,7 +384,7 @@ class MainWindow(QMainWindow):
                     self.duo.capture_second()
                     break
         elif saved_roles:
-            self.show_status("Порядок окон не восстановлен однозначно: выберите МА и баффера")
+            self.show_status("Порядок окон не восстановлен однозначно: выберите МА и саппорта")
 
     def open_examples(self) -> None:
         os.startfile(example_scripts_dir())
@@ -368,7 +415,9 @@ class MainWindow(QMainWindow):
         from hid_pilot.firmware_panel import FirmwareDialog
 
         self.firmware_open = True
+        self.record_video.setEnabled(False)
         self.start_button.setEnabled(False)
+        self.debug_start_button.setEnabled(False)
         self.quick.setEnabled(False)
         self.party.enabled.setChecked(False)
         try:
@@ -380,7 +429,9 @@ class MainWindow(QMainWindow):
                 self.show_status(f"Pico проверен; выбран CDC data port {dialog.verified_port}")
         finally:
             self.firmware_open = False
+            self.record_video.setEnabled(True)
             self.start_button.setEnabled(True)
+            self.debug_start_button.setEnabled(True)
             self.quick.setEnabled(True)
 
     def show_status(self, text: str) -> None:
@@ -529,7 +580,7 @@ class MainWindow(QMainWindow):
         self.auto_numbers(manual_party, manual_stats, panel)
 
     def auto_numbers(self, manual_party: bool = False, manual_stats: bool = False,
-                     panel: PartyPanel | None = None) -> None:
+                     panel: PartyPanel | None = None, *, manual_summon: bool = False) -> None:
         if self.auto_busy or (self.worker is not None and self.worker.is_alive()):
             self.show_status("Перед автопоиском остановите исполнение сценария")
             return
@@ -563,6 +614,10 @@ class MainWindow(QMainWindow):
                 self.review_auto_numbers({"generation": generation, "error": str(exc)})
                 return
 
+            if manual_summon:
+                self.review_summon({"generation": generation, "image": image,
+                                    "target": target, "path": path, **context})
+                return
             if manual_party:
                 self.review_party({"generation": generation, "image": image,
                                    "target": target, "path": path, **context})
@@ -594,6 +649,45 @@ class MainWindow(QMainWindow):
             threading.Thread(target=search, name="AutoNumbers", daemon=True).start()
 
         QTimer.singleShot(350, capture)
+
+    def review_summon(self, payload: dict) -> None:
+        from hid_pilot.bars import BarProfile
+        from hid_pilot.summon_review import SummonReview
+
+        if payload["generation"] != self.auto_generation:
+            return
+        try:
+            target = payload["target"]
+            height, width = payload["image"].shape[:2]
+            path = payload["path"].parent / "farm-bars.json"
+            current = snapshot(target.hwnd)
+            if (current.pid, current.rect) != (target.pid, target.rect) or not self.setup_context_matches(payload):
+                raise ValueError("Окно/сценарий изменились; повторите настройку самона")
+            profile = (BarProfile.model_validate_json(path.read_text("utf-8")) if path.exists()
+                       else BarProfile(width=width, height=height))
+            if (profile.width, profile.height) != (width, height):
+                raise ValueError("Размер окна изменился; сначала настройте основные статы заново")
+            self.activateWindow()
+            dialog = SummonReview(payload["image"], profile.summon, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                self.show_status("Настройка самона отменена; профиль не изменён")
+                return
+            current = snapshot(target.hwnd)
+            if (current.pid, current.rect) != (target.pid, target.rect) or not self.setup_context_matches(payload):
+                raise ValueError("Окно/сценарий изменились; повторите настройку самона")
+            # Меняется только панель самона; остальные настройки остаются в профиле.
+            profile.summon = dialog.profile
+            path.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+            panel = payload.get("panel", self.party)
+            panel.enabled.setChecked(False)
+            panel.reset()
+            self.show_status("Панель самона сохранена" if profile.summon else "Наблюдение самона отключено")
+        except Exception as exc:
+            logger.exception("Не удалось настроить самона")
+            self.show_status(str(exc))
+        finally:
+            self.auto_busy = False
+            self.auto_search.setEnabled(True)
 
     def setup_context_matches(self, payload: dict) -> bool:
         panel = payload.get("panel")
@@ -680,6 +774,7 @@ class MainWindow(QMainWindow):
             if (current.pid, current.rect) != (target.pid, target.rect) or not self.setup_context_matches(payload):
                 raise RuntimeError("Геометрия окна изменилась — повторите автопоиск")
             profile.numbers = dialog.boxes.copy()
+            profile.summon = getattr(dialog, "summon", profile.summon)
             if isinstance(getattr(dialog, "chat_enabled", None), QCheckBox):
                 profile.system_chat = dialog.system_chat
                 profile.system_chat_enabled = dialog.chat_enabled.isChecked()
@@ -717,14 +812,14 @@ class MainWindow(QMainWindow):
             logger.exception("Не удалось сохранить предложения OCR")
             self.show_status(str(exc))
 
-    def start(self) -> None:
+    def start(self, debug: bool = False) -> None:
         if self.tabs.currentWidget() is self.party:
             self.show_status("Наблюдение включается флажком на вкладке Пати")
             return
         if self.tabs.currentIndex() == 0:
             self.quick.start_selected()
             return
-        self.launch()
+        self.launch(debug=debug)
 
     def start_loops(self, plans: tuple[KeyLoop, ...]) -> None:
         if not plans:
@@ -732,7 +827,11 @@ class MainWindow(QMainWindow):
             return
         self.launch(plans)
 
-    def launch(self, plans: tuple[KeyLoop, ...] | None = None) -> None:
+    def show_replay_status(self, text: str) -> None:
+        self.replay_status.setText(text)
+        self.journal.appendPlainText(text)
+
+    def launch(self, plans: tuple[KeyLoop, ...] | None = None, *, debug: bool = False) -> None:
         if self.firmware_open:
             self.show_status("Дождитесь завершения обслуживания Pico и закройте окно прошивки")
             return
@@ -741,6 +840,10 @@ class MainWindow(QMainWindow):
             return
         if self.worker is not None and self.worker.is_alive():
             return
+        if self.replay.busy:
+            self.show_status("Дождитесь сохранения видео предыдущего запуска")
+            return
+        record_video = self.record_video.isChecked()
         duo_mode = plans is None and self.tabs.currentWidget() is self.duo
         try:
             script = parse_script(self.editor.toPlainText()) if plans is None and not duo_mode else ()
@@ -774,13 +877,13 @@ class MainWindow(QMainWindow):
                 # Геометрия первого окна фиксируется на весь совместный запуск.
                 current = snapshot(target.hwnd)
                 if current.pid != target.pid:
-                    raise ValueError("Окно фармера сменило процесс")
+                    raise ValueError("Окно МА сменило процесс")
                 target = current
                 profile = prepare_duo(self.duo.base(), target, support)
                 party_profile = load_duo_party(self.duo.base(), target)
             activated = activate(target)
             if duo_mode and activated.rect != target.rect:
-                raise ValueError("Геометрия окна фармера изменилась; повторите запуск")
+                raise ValueError("Геометрия окна МА изменилась; повторите запуск")
             target = activated
         except Exception as exc:
             logger.exception("Не удалось подготовить запуск")
@@ -795,7 +898,9 @@ class MainWindow(QMainWindow):
         if plans is None and any(extensions[item.operation].exclusive_observer
                                  for item in script if item.operation in extensions):
             self.party.enabled.setChecked(False)
+        self.record_video.setEnabled(False)
         self.start_button.setEnabled(False)
+        self.debug_start_button.setEnabled(False)
         self.quick.set_running(plans if plans is not None else ())
         cancelled = self.quick.cancelled.copy()
         self.targets.setEnabled(False)
@@ -808,32 +913,48 @@ class MainWindow(QMainWindow):
             transport = None
             started_at = time.monotonic()
             stop_reason = "Сценарий завершён"
+            recording = False
+            finished_after_support_death = False
             try:
+                if record_video:
+                    self.replay.prepare()
+                    recording = True
                 if self.cancel.wait(1):
                     raise Stopped("Старт отменён")
                 desktop = Desktop(target)
                 transport = PicoTransport(port)
                 self.controller = ActionController(desktop, transport,
                                                    lambda: self.hotkey.available, self.events.status.emit)
+                self.controller.debug_capture = debug
                 if self.cancel.is_set():
                     raise Stopped("Старт отменён")
+                self.controller.prepare_keyboard((target, support) if duo_mode else (target,))
                 self.controller.start()
                 if duo_mode:
                     notifications = ScriptNotifications(self.events, self.telegram, script_name, target.title,
-                                                        duo_mode=True)
+                                                        duo_mode=True, replay=self.replay if recording else None,
+                                                        support_window=support.title)
                     duo_farmer = DuoFarmer(self.controller, target, support, profile, config, notifications,
-                                           self.events.duo_observation.emit, party_profile=party_profile)
+                                           self.events.duo_observation.emit, party_profile=party_profile,
+                                           support_life=SupportLifeObserver(notifications.support_death,
+                                                                            notifications.support_revived))
                     try:
                         duo_farmer.setup_observation(self.duo.base() / "farmer")
                         duo_farmer.run()
                     finally:
                         duo_farmer.close_observation()
                 elif plans is None:
-                    notifications = ScriptNotifications(self.events, self.telegram, script_name, target.title)
+                    notifications = ScriptNotifications(self.events, self.telegram, script_name, target.title,
+                                                        replay=self.replay if recording else None)
                     Runner(self.controller, base, notifications, variables).run(script)
                 else:
                     run_key_loops(self.controller, plans, cancelled, self.events.status.emit)
                 self.events.status.emit("Сценарий завершён")
+            except SupportDied as exc:
+                finished_after_support_death = True
+                stop_reason = str(exc)
+                logger.info("%s", stop_reason)
+                self.events.status.emit(stop_reason)
             except Exception as exc:
                 stop_reason = f"Остановлено: {exc}"
                 logger.exception("Сценарий остановлен")
@@ -849,6 +970,11 @@ class MainWindow(QMainWindow):
                     logger.exception("Ошибка освобождения HID")
                     self.events.status.emit(f"Ошибка отключения: {exc}")
                 self.controller = None
+                if recording:
+                    if finished_after_support_death:
+                        self.replay.trigger(stop_reason, final=True, preserve_death=True)
+                    else:
+                        self.replay.trigger(stop_reason, final=True)
                 if not self.silent_button_stop.is_set():
                     self.telegram.notify_stopped(ScriptStopped(script_name, target.title, stop_reason,
                                                                time.monotonic() - started_at))
@@ -864,6 +990,7 @@ class MainWindow(QMainWindow):
         # Ручной STOP, hard-stop и закрытие GUI не отправляют уведомление Telegram.
         self.silent_button_stop.set()
         self.cancel.set()
+        self.replay.trigger("STOP / hard-stop", final=True)
         controller = self.controller
         if controller is not None:
             if controller.stopped.is_set():
@@ -892,8 +1019,10 @@ class MainWindow(QMainWindow):
             self.events.status.emit("Запрошена PAUSE — вручную; для продолжения нажмите кнопку ещё раз")
 
     def finished(self) -> None:
+        self.record_video.setEnabled(True)
         self.duo.set_running(False)
         self.start_button.setEnabled(True)
+        self.debug_start_button.setEnabled(True)
         self.targets.setEnabled(True)
         self.quick.set_running(None)
 
@@ -914,6 +1043,10 @@ class MainWindow(QMainWindow):
                 self.show_status("Ожидание завершения worker; повторите закрытие")
                 event.ignore()
                 return
+        if not self.replay.close():
+            self.show_status("Остановка видеобуфера; повторите закрытие через несколько секунд")
+            event.ignore()
+            return
         self.hotkey.close()
         self.save_layout()
         event.accept()

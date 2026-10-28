@@ -30,13 +30,19 @@ def test_manual_stat_and_level_draw_save_and_cancel(monkeypatch):
 
     monkeypatch.setattr(QDialog, "exec", accept)
     review.edit_own_regions()
-    assert review.boxes == {"hp": box, "mp": box}
-    assert review.level_boxes["own_level"] == box
-    assert review.target_config["target_panel"] == box.model_dump()
-    assert review.target_player_panel == box
+    padded = box.expanded_horizontal(.2, .2)
+    name = box.expanded_horizontal(0., 1.)
+    assert review.boxes == {"hp": box, "mp": padded}
+    assert review.level_boxes["own_level"] == padded
+    assert review.target_config["target_panel"] == name.model_dump()
+    assert review.target_player_panel == name
+    monkeypatch.setattr(QDialog, "exec", lambda dialog: QDialog.DialogCode.Accepted)
+    review.edit_own_regions()
+    assert review.boxes == {"hp": box, "mp": padded}
+    assert review.target_player_panel == name
     monkeypatch.setattr(QDialog, "exec", lambda dialog: QDialog.DialogCode.Rejected)
     review.edit_own_regions()
-    assert review.boxes == {"hp": box, "mp": box}
+    assert review.boxes == {"hp": box, "mp": padded}
     review.close()
     app.processEvents()
 
@@ -68,6 +74,6 @@ def test_level_setup_opens_target_level_and_preserves_own_level(monkeypatch):
 
     monkeypatch.setattr(QDialog, "exec", accept)
     review.edit_own_regions("target_level")
-    assert review.level_boxes == {"own_level": box, "target_level": box}
+    assert review.level_boxes == {"own_level": box, "target_level": box.expanded_horizontal(.2, .2)}
     review.close()
     app.processEvents()

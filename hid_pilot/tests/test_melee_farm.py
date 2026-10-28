@@ -11,6 +11,7 @@ from hid_pilot.target import TargetObservation
 
 
 def harness(**changes):
+    changes.setdefault("hp_elixir_key", None)
     changes.setdefault("buff_delay_minutes", 0)
     changes.setdefault("aggro_key", None)
     # Сценарии боя и восстановления ниже изолированы от стартового подбора.
@@ -22,7 +23,7 @@ def harness(**changes):
     controller = Mock()
     controller.transport.protocol = "HID_PILOT_V4"
     controller.wait.side_effect = lambda seconds: now.__setitem__(0, now[0] + seconds)
-    controller.key.side_effect = lambda key, ms: now.__setitem__(0, now[0] + ms / 1000)
+    controller.key.side_effect = lambda key, ms, **kwargs: now.__setitem__(0, now[0] + ms / 1000)
     farmer = MeleeFarmer(controller, Mock(), MeleeConfig(rest="=", humanize=False, **changes),
                          Mock(), lambda: now[0])
     state = [1., 1., 1.]
@@ -64,7 +65,7 @@ def test_attack_repeats_every_one_and_half_seconds_without_extending_approach_ti
     farmer, controller, now, _ = harness(attack_delay=1.5, approach_delay=5)
     attacks = []
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         if name == farmer.config.attack:
             attacks.append(now[0])
         now[0] += duration / 1000
@@ -122,10 +123,10 @@ def test_dead_target_holds_loot_without_approach():
     farmer, controller, _, state = harness()
     state[2] = 0.
     farmer.fight(1.)
-    assert [call.args for call in controller.key.call_args_list] == [("R", 100), ("5", 1000)]
+    assert [call.args for call in controller.key.call_args_list] == [("R", 100), ("5", 50)]
 
 
-def test_next_target_tries_three_moves_before_chat_and_exhaustion():
+def test_next_target_tries_names_before_each_of_three_moves_and_exhaustion():
     farmer, controller, _, state = harness()
     state[2] = None
     farmer.known_mobs = {"Gremlin": 1, "Cloudy Beast": 22}
@@ -136,7 +137,8 @@ def test_next_target_tries_three_moves_before_chat_and_exhaustion():
     movements = [(key, ms) for key, ms in keys if key in "WASD"]
     assert len(movements) == 3
     assert all(2000 <= ms <= 3000 for _, ms in movements)
-    assert sorted(call.args[0] for call in controller.target_by_name.call_args_list) == ["Cloudy Beast", "Gremlin"]
+    assert sorted(call.args[0] for call in controller.target_by_name.call_args_list) == (
+        ["Cloudy Beast"] * 4 + ["Gremlin"] * 4)
 
 
 def test_chat_selection_requires_matching_monster():

@@ -134,15 +134,14 @@ def test_unknown_player_bar_stops_after_bounded_retries(movement):
     controller = Mock()
     controller.active_time.return_value = 0.
     profile = Mock()
-    profile.read.side_effect = [None, .9, .5] * 5
+    profile.read.side_effect = lambda image, name: None if name == "hp" else .9
     farm = Farmer(controller, profile, FarmConfig(rest="I", observation_movement=movement),
                   lambda _: None)
     with pytest.raises(RuntimeError, match="не распознаны"):
         farm.run()
-    assert controller.capture.call_count == 5
-    assert [call.args[0] for call in controller.key.call_args_list] == (
-        ["W", "A", "S"] if movement else []
-    )
+    assert controller.capture.call_count == 125
+    controller.key.assert_not_called()
+    controller.release_inputs.assert_called_once()
 
 
 def test_missing_target_during_combat_does_not_mean_dead():
@@ -311,7 +310,7 @@ def test_low_hp_during_reposition_heals_and_reacquires():
 
 
 @pytest.mark.parametrize("missing", ["hp", "mp"])
-def test_unknown_bars_retry_and_recover_with_movement(missing):
+def test_unknown_bars_retry_and_recover_without_movement(missing):
     controller = Mock()
     controller.active_time.return_value = 0.
     profile = Mock()
@@ -320,7 +319,8 @@ def test_unknown_bars_retry_and_recover_with_movement(missing):
     farm = Farmer(controller, profile, FarmConfig(rest="I"), lambda _: None)
     assert farm.observe() == (.8, .7, .5)
     assert controller.capture.call_count == 3
-    controller.key.assert_called_once_with("W", 100)
+    controller.key.assert_not_called()
+    controller.release_inputs.assert_called_once()
 
 
 def test_low_mp_finishes_mob_before_rest():

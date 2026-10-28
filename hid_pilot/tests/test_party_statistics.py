@@ -2,6 +2,14 @@ from hid_pilot.party import PartyMember
 from hid_pilot.party_statistics import format_statistics
 
 
+def test_unknown_roster_is_not_displayed_as_empty_party():
+    text = format_statistics({"hp": .4, "mp": .65}, {}, [], {},
+                             "Саппорт: HP/MP по строке пати МА", roster_known=False)
+    assert "HP 40%" in text and "MP 65%" in text
+    assert "ПАТИ — участников: неизвестно" in text
+    assert "Состояние: неизвестно" in text
+
+
 def test_sections_follow_requested_order_and_columns_stay_aligned():
     members = [PartyMember(slot=2, cp=1., hp=.5, mp=None, name="Second"),
                PartyMember(slot=1, cp=.9, hp=1., mp=.7, name="First")]
@@ -32,6 +40,21 @@ def test_recognized_levels_are_always_shown():
     text = format_statistics({"level": 20}, {"level": 25}, [], {}, "Наблюдение")
     assert "Уровень: 20" in text
     assert "Уровень цели: 25" in text
+
+
+def test_tiny_positive_hp_is_not_displayed_as_zero():
+    text = format_statistics({}, {"hp": 7 / 4506, "dead": False}, [], {}, "Бой")
+    assert "HP цели: <1%" in text
+    assert "Состояние: живая" in text
+
+
+def test_zero_hp_or_marker_always_displays_dead_and_uses_actual_kind():
+    for selected in ({"hp": 0., "dead": False},
+                     {"hp": 7 / 4506, "dead": False, "death_marker": True}):
+        text = format_statistics({}, {**selected, "kind": "monster", "name": "Rowin Undine"}, [], {}, "Бой")
+        assert "Состояние: мёртвая" in text
+        assert "Тип: монстр" in text
+        assert "Имя: Rowin Undine" in text
 
 
 def test_buff_columns_show_matching_lists_even_without_member_names():

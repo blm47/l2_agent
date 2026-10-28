@@ -1,37 +1,53 @@
-# Дуо-фарм: настройки мили-фарма и бафера/хилера.
-# START запускается с вкладки «Два окна».
-# Хил помощника отключается строкой: set heal_key ""
+# Дуо-фарм: МА + саппорт.
+# START запускается с вкладки «Дуо: МА + саппорт».
+# Пати-реген отключается строкой: set support_party_heal_key ""
+
+# Сильные HP-эликсиры: по одному расходнику на персонажа, N2, откат 5 минут.
+set hp_elixir_key "NUM2"
+set hp_elixir_hp_threshold 0.12
+set hp_elixir_cooldown 300
+set support_hp_elixir_key "NUM2"
+set support_hp_elixir_hp_threshold 0.35
+set support_hp_elixir_cooldown 300
 
 # УД МА: урон выше 5% HP/с или собственное HP ниже 7%; пустая кнопка отключает.
 set ud_key "F6"
 set ud_cooldown 900
-set ud_damage_per_second 0.2
-set ud_hp_threshold 0.07
-set support_buff_min_mp 0.6
-set support_buff_emergency_hp 0.2
+set ud_damage_per_second 0.12
+set ud_hp_threshold 0.19
+set support_buff_min_mp 0.8
+set support_buff_emergency_hp 0.35
+
+# Быстрое переключение без проверки добивания; 0.07 = 7% HP цели.
+set experimental_fast_farm true
+set fast_target_hp_threshold 0.05
+
+# Пропуск цели при максимальном HP >= максимального HP МА × множитель.
+set target_max_hp_multiplier 9.0
 
 set humanize true
-set random_movement true
+set random_movement false
 set next_target "6"
 set attack "3"
 set melee "4"
 set loot "C"
 set heal "F1"
 set rest "="
-set pickup_loot true
+set pickup_loot false
 set target_threshold 0.1
-set hp_threshold 0.2
+set hp_threshold 0.47
 set mp_threshold 0.1
 set mp_resume 0.9
 set attack_delay 1.5
+# Зелье даёт усиленный HP-реген на 15 секунд; остальные хилы и УД доступны.
 set heal_delay 14.0
 set target_delay 0.7
 set approach_delay 5.0
 set loot_delay 0.7
-set loot_attempts 2
+set loot_attempts 1
 set target_attempts 10
 set combat_timeout 90.0
-set stuck_timeout 5.0
+set stuck_timeout 8.0
 set reposition_delay 3.0
 set reposition_attempts 3
 set progress_epsilon 0.002
@@ -40,29 +56,36 @@ set observation_attempts 30
 set observation_delay 0.5
 set observation_movement true
 set heal_attempts 10
-set cycles 1000
-set max_hours 3.0
+set cycles 5000
+set max_hours 9.0
 set buff_delay_minutes 1.0
+set buff_min_mp 0.1
 set aggro_key "2"
+# Масс-агр прикрывает пати и самона при HP <33% или падении от 15% HP/с.
+set mass_aggro_key "Q"
+set mass_aggro_cast_seconds 1.0
+set mass_aggro_cooldown 40.0
+set mass_aggro_hp_threshold 0.33
+set mass_aggro_damage_per_second 0.15
 set buff1_key "F12"
-set buff1_rebuff_minutes 19.0
-set buff1_cast_seconds 1.5
+set buff1_rebuff_minutes 9.7
+set buff1_cast_seconds 2.5
 set buff2_key "F11"
-set buff2_rebuff_minutes 19.0
-set buff2_cast_seconds 3.5
+set buff2_rebuff_minutes 9.7
+set buff2_cast_seconds 1.5
 set buff3_key "F10"
-set buff3_rebuff_minutes 19.0
-set buff3_cast_seconds 1.0
+set buff3_rebuff_minutes 9.7
+set buff3_cast_seconds 4.0
 set vampiric_key "F2"
 set vampiric_hp_threshold 0.4
-set vampiric_cast_seconds 2.0
+set vampiric_cast_seconds 2.7
 set vampiric_cooldown 5.0
 set regen_enabled false
-set pre_attack_loot true
+set loot_before_farm true
 set quiet_seconds 2.5
-set loot_hold 1.0
+set loot_hold 0.05
 set search_moves 3
-set search_cycles 30
+set search_cycles 300
 set hp_rest_threshold 0.3
 set hp_resume 0.9
 set target_verify_seconds 2.0
@@ -70,41 +93,45 @@ set damage_keys "3,4"
 set overhit_keys "1"
 set damage_interval 3.0
 set overhit_interval 5.0
-set overhit_margin 1.15
-set overhit_hp_threshold 0.02
+set overhit_margin 1.45
+set overhit_hp_threshold 0.05
 set overhit_hold_ms 700
-set overhit_early_chance 0.5
+set overhit_early_chance 0.4
 set overhit_during_combat false
 set stand "-"
 set damage_sample_gap 1.0
 
-# Бафер/хилер во втором окне.
+# Саппорт во втором окне.
 set buff_key "F11"
-set follow_key "F12"
+set support_buff2_key "F12"
+set support_buff2_seconds 10.0
+set follow_key "0"
 set support_key "F10"
-set heal_key "F9"
-set support_self_heal_key "F2"
+set heal_key ""
+set support_self_heal_key ""
 set support_potion_key "F1"
-set support_potion_hp_threshold 0.2
-set support_potion_cooldown 12.0
-set support_vampiric_key ""
-set support_vampiric_hp_threshold 0.5
-set support_vampiric_cast_seconds 1.0
-set support_vampiric_cooldown 5.0
+set support_potion_hp_threshold 0.49
+set support_potion_cooldown 14.0
+set support_vampiric_key "F2"
+set support_vampiric_hp_threshold 0.7
+set support_vampiric_cast_seconds 1.3
+set support_vampiric_cooldown 1.5
+# F9 вешает пати-реген на 15 секунд; HP восстанавливается каждую секунду.
+# Удержание 300 мс; при низком HP разрешены до трёх повторов по откату.
 set support_party_heal_key "F9"
-set support_party_heal_threshold 0.6
-set support_party_heal_cast_seconds 1.0
-set support_party_heal_cooldown 5.0
+set support_party_heal_threshold 0.75
+set support_party_heal_cast_seconds 1.5
+set support_party_heal_cooldown 12.0
 set stop_attack_key "ESC"
 set defense_target_key "F8"
-set buff_seconds 15.0
-set rebuff_minutes 19.0
+set buff_seconds 10.0
+set rebuff_minutes 9.4
 set support_party_slot 1
 set damage_epsilon 0.005
-set damage_memory_seconds 2.0
+set damage_memory_seconds 1.5
 set support_seconds 0.3
 set heal_seconds 1.5
-set heal_threshold 0.6
-set support_self_heal_threshold 0.6
+set heal_threshold 0.7
+set support_self_heal_threshold 0.8
 set heal_cooldown 12.0
 set poll_seconds 0.2

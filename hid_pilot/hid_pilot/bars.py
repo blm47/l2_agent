@@ -25,8 +25,35 @@ class BarBox(BaseModel):
             raise ValueError("Пустая область полосы")
         return self
 
+    def expanded_horizontal(self, left: float, right: float) -> "BarBox":
+        """
+        Добавляет запас от исходной ширины, не выходя за границы кадра.
+        """
+        if not 0 <= left < float("inf") or not 0 <= right < float("inf"):
+            raise ValueError("Запас области должен быть конечным и неотрицательным")
+        width = self.x2 - self.x1
+        return BarBox(x1=max(0., self.x1 - width * left), y1=self.y1,
+                      x2=min(1., self.x2 + width * right), y2=self.y2)
+
+
+class SummonProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    hp: BarBox
+    mp: BarBox
+    icon: BarBox
+    icon_pixels: list[list[int]]
+
+    @model_validator(mode="after")
+    def valid_icon(self) -> "SummonProfile":
+        if (len(self.icon_pixels) != 32 or any(len(row) != 32 for row in self.icon_pixels)
+                or any(not 0 <= pixel <= 255 for row in self.icon_pixels for pixel in row)
+                or float(np.asarray(self.icon_pixels).std()) < 10):
+            raise ValueError("Нужен контрастный эталон иконки самона 32×32")
+        return self
+
 
 class BarProfile(BaseModel):
+    summon: SummonProfile | None = None
     system_chat: BarBox | None = None
     system_chat_enabled: bool = False
     model_config = ConfigDict(extra="forbid")
@@ -58,12 +85,16 @@ class BarProfile(BaseModel):
         """
         Читает только явно размеченный уровень, не выводя его из HP или имени.
         """
-        from hid_pilot.numbers import shared_numbers
+        from hid_pilot.numbers import NumbersReader, shared_numbers
 
         box = getattr(self, name)
         if box is None or image.shape[:2] != (self.height, self.width):
             return None
-        rows = (reader or shared_numbers()).detect(self.crop(image, box))
+        engine = reader or shared_numbers()
+        crop = self.crop(image, box)
+        if isinstance(engine, NumbersReader):
+            return engine.read_level(crop)
+        rows = engine.detect(crop)
         values = [int(text.strip()) for _, text, score in rows
                   if score >= .9 and text.strip().isascii() and text.strip().isdigit()
                   and 1 <= int(text.strip()) <= 150]
@@ -81,7 +112,7 @@ class BarProfile(BaseModel):
             return False
         current = red_marker_mask(crop)
         union = np.count_nonzero(current | expected)
-        return union > 0 and np.count_nonzero(current & expected) / union >= .9
+        return bool(union > 0 and np.count_nonzero(current & expected) / union >= .9)
     target_zero_box: BarBox | None = None
     target_zero_mask: list[str] = Field(default_factory=list, max_length=100)
 

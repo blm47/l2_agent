@@ -35,6 +35,7 @@ class PartyPanel(QWidget):
     setup_requested = Signal()
     manual_requested = Signal()
     own_requested = Signal()
+    summon_requested = Signal()
     updated = Signal(str)
 
     def __init__(self, target: Callable[[], Target | None], path: Callable[[], Path | None],
@@ -60,6 +61,9 @@ class PartyPanel(QWidget):
         own = QPushButton("Вручную указать свои статы и уровни…")
         own.clicked.connect(self.own_requested.emit)
         layout.addWidget(own)
+        summon = QPushButton("Настроить HP / MP самона…")
+        summon.clicked.connect(self.summon_requested.emit)
+        layout.addWidget(summon)
         self.enabled = QCheckBox("Наблюдать пати (OCR имён, CP/HP/MP по полосам)")
         self.enabled.toggled.connect(self.reset)
         layout.addWidget(self.enabled)
@@ -135,6 +139,9 @@ class PartyPanel(QWidget):
                     own_values = {name: own.read(image, name) if name in own.bars.keys() | own.numbers.keys() else None
                                   for name in ("hp", "mp", "cp")}
                     own_values["level"] = own.read_level(image, "own_level")
+                    if own.summon is not None:
+                        from hid_pilot.summon import read_summon
+                        own_values.update(read_summon(image, own))
                 members = read_party(image, profile, shared_numbers()) if profile else []
                 if profile is not None:
                     if self.class_detector is None or self.class_detector.profile != profile:
@@ -153,7 +160,7 @@ class PartyPanel(QWidget):
 
     def receive(self, payload: dict) -> None:
         self.busy = False
-        if payload["generation"] != self.generation or not self.enabled.isChecked():
+        if self.running() or payload["generation"] != self.generation or not self.enabled.isChecked():
             return
         if self.path() is None or payload["target"] != self.target() or payload["path"] != self.profile_path():
             self.reset()

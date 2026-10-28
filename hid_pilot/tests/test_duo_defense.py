@@ -11,7 +11,7 @@ def test_falling_hp_without_target_selects_and_attacks_before_support_heal():
     state = [.5, None]
     original_key = controller.key
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         original_key(name, duration)
         if controller.role == FARMER and name == farmer.config.next_target:
             state[1] = .9
@@ -34,7 +34,7 @@ def test_disabled_support_heal_does_not_disable_defense():
     live = [False]
     original_key = controller.key
 
-    def key(name, duration):
+    def key(name, duration, **kwargs):
         original_key(name, duration)
         if name == farmer.config.next_target:
             live[0] = True
@@ -60,6 +60,99 @@ def test_pre_pause_hp_is_not_used_to_trigger_defense():
     controller.capture = lambda: (.5, None, False)
     farmer.observe()
     assert controller.events == []
+
+
+def test_support_only_damage_selects_aggressor_without_farmer_damage(monkeypatch):
+    from test_duo_self_heal import observed_duo
+
+    farmer, controller, reader = observed_duo(monkeypatch, .9, heal_key=None, support_self_heal_key=None)
+    live = [False]
+    controller.capture = lambda: (1., .9 if live[0] else None, False)
+    original = controller.key
+
+    def key(name, duration, **kwargs):
+        original(name, duration, **kwargs)
+        if name == farmer.config.next_target:
+            live[0] = True
+
+    controller.key = key
+    farmer.observe()
+    controller.wait(.2)
+    reader.return_value = .7
+    farmer.observe()
+    assert controller.events[:2] == [(1, farmer.config.next_target), (1, farmer.config.attack)]
+
+
+def test_party_damage_keeps_existing_living_target_instead_of_next_target(monkeypatch):
+    from test_duo_self_heal import observed_duo
+
+    farmer, controller, reader = observed_duo(monkeypatch, .9, heal_key=None, support_self_heal_key=None)
+    controller.capture = lambda: (1., .7, False)
+    farmer.observe()
+    controller.wait(.2)
+    reader.return_value = .7
+    farmer.observe()
+    assert (1, farmer.config.attack) in controller.events
+    assert (1, farmer.config.next_target) not in controller.events
+
+
+@pytest.mark.parametrize("resource", ["hp", "cp"])
+def test_other_party_member_damage_is_part_of_defense(monkeypatch, resource):
+    from hid_pilot.party import PartyMember
+    from test_duo_self_heal import observed_duo
+
+    farmer, controller, _ = observed_duo(monkeypatch, 1., heal_key=None, support_self_heal_key=None)
+    farmer.display_data = ({}, {}, [PartyMember(slot=3, hp=1., cp=1.)])
+    farmer.track_damage(None, 1.)
+    controller.wait(.2)
+    farmer.display_data = ({}, {}, [PartyMember(slot=3, **{"hp": 1., "cp": 1., resource: .7})])
+    farmer.track_damage(None, 1.)
+    assert farmer.party_damage_now
+    assert f"party_3_{resource}" in farmer.party_damage_sources
+    assert farmer.damage_until > controller.now
+
+
+@pytest.mark.parametrize("gap,pause,unknown", [(2, False, False), (.2, True, False), (.2, False, True)])
+def test_stale_paused_or_missing_party_hp_does_not_invent_damage(monkeypatch, gap, pause, unknown):
+    from hid_pilot.party import PartyMember
+    from test_duo_self_heal import observed_duo
+
+    farmer, controller, _ = observed_duo(monkeypatch, 1., heal_key=None, support_self_heal_key=None)
+    farmer.display_data = ({}, {}, [PartyMember(slot=3, hp=1., cp=1.)])
+    farmer.track_damage(None, 1.)
+    controller.wait(gap)
+    controller.pause_generation += int(pause)
+    farmer.display_data = ({}, {}, [PartyMember(slot=3, hp=None if unknown else .7, cp=1.)])
+    farmer.track_damage(None, 1.)
+    assert not farmer.party_damage_now
+
+
+def test_target_verification_under_party_damage_does_not_select_another_target(monkeypatch):
+    from test_duo_self_heal import observed_duo
+
+    farmer, controller, reader = observed_duo(monkeypatch, .9, heal_key=None, support_self_heal_key=None)
+    controller.capture = lambda: (1., None, False)
+    farmer.observe()
+    controller.wait(.2)
+    reader.return_value = .7
+    farmer.verify_target(1., 1., None, None)
+    assert not farmer.verifying_target
+    assert (1, farmer.config.next_target) not in controller.events
+
+
+def test_damaged_target_is_not_dropped_after_short_attack_gap_under_fire():
+    farmer, controller, now, _ = harness(stuck_timeout=7, pickup_loot=False)
+
+    def observe():
+        farmer.under_attack = True
+        # Атаки раз в три секунды: это дольше старого укороченного таймаута 1,7 с.
+        target = max(0., 1. - .2 * (1 + int(now[0] // 3)))
+        return .8, 1., target
+
+    farmer.observe = observe
+    farmer.fight(1.)
+    assert farmer.training_kills == 1
+    assert "ESC" not in [call.args[0] for call in controller.key.call_args_list]
 
 
 def test_defense_keeps_high_level_filter_and_returns_unknown_after_esc():
