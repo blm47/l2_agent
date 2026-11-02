@@ -39,6 +39,12 @@ def read_summon(image: np.ndarray, profile: BarProfile) -> dict[str, float | Non
     if actual.std() < 10:
         return result
     expected = np.asarray(regions.icon_pixels, dtype=np.uint8)
+    # Края разметки захватывают прозрачный фон: сравниваем центр иконки лапы.
+    # Смена пейзажа за панелью не должна скрывать читаемые HP/MP самона.
+    actual = actual[4:-4, 4:-4]
+    expected = expected[4:-4, 4:-4]
+    if actual.std() < 10 or expected.std() < 10:
+        return result
     score = float(cv2.matchTemplate(actual, expected, cv2.TM_CCOEFF_NORMED)[0, 0])
     if not np.isfinite(score) or score < .92:
         return result

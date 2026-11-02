@@ -8,6 +8,7 @@ from hid_pilot.bars import BarBox, BarProfile
 from hid_pilot.chat_preview import latest_chat_preview
 from hid_pilot.farm_observer import FarmIdentityCache
 from hid_pilot.system_chat import ChatMessage, ChatTracker, parse_message
+from hid_pilot.target import TargetObservation
 from test_melee_farm import harness
 
 
@@ -58,6 +59,8 @@ def chat_farmer(monkeypatch):
     farmer, controller, _, _ = harness()
     farmer.profile = BarProfile(width=200, height=100, system_chat_enabled=True,
                                system_chat=BarBox(x1=0, y1=0, x2=1, y2=1))
+    farmer.last_target = TargetObservation(at=0, kind="monster", hp=.8)
+    farmer.observation_details = {"hp": "OCR 1000/1000", "target_hp": "OCR 800/1000"}
     cache = Mock()
     cache.chat_ready.return_value = True
     cache.take_chat_events.return_value = []

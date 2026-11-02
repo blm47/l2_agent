@@ -91,6 +91,7 @@ def test_fast_selection_checks_fresh_target_before_immediate_attack(monkeypatch,
     def capture(self):
         assert self.last_target is None
         self.last_target = TargetObservation(at=1., kind=kind, hp=hp, level=level)
+        self.observation_details = {"hp": "OCR 1000/1000", "target_hp": "OCR 900/1000"}
         return 1., 1., hp
 
     monkeypatch.setattr(Farmer, "observe", capture)

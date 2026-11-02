@@ -17,13 +17,22 @@ from hid_pilot.controller import ActionController
 from hid_pilot.desktop import Target
 from hid_pilot.support_life import SupportLifeObserver, empty_hp_bar
 from hid_pilot.summon import read_summon
+from hid_pilot.summon_recovery import SummonRecovery
 from hid_pilot.script import KEYS, script_variables
-from hid_pilot.farm_melee import MeleeConfig, MeleeFarmer, prepare_extension
+from hid_pilot.farm_melee import INACTIVE_MELEE_SETTINGS, MeleeConfig, MeleeFarmer, prepare_extension
 
 PARTY_REGEN_SECONDS = 15.
 PARTY_REGEN_RETRIES = 3
+SUPPORT_SKILL_REPEAT_SECONDS = .085
+STRONG_AGGRESSOR_SELECTIONS = 6
+SUMMON_STALL_SECONDS = 180.
+SUMMON_MIN_MP = .1
+SUMMON_MAX_ATTEMPTS = 10
 
 class DuoConfig(MeleeConfig):
+    summon_key: str | None = "NUM6"
+    summon_cast_seconds: float = Field(default=20, ge=.1, le=120)
+    summon_cooldown: float = Field(default=5, ge=.1, le=300)
     ud_key: str | None = None
     ud_cooldown: float = Field(default=900, ge=1, le=86400)
     ud_damage_per_second: float = Field(default=.05, gt=0, le=1)
@@ -35,6 +44,19 @@ class DuoConfig(MeleeConfig):
     mass_aggro_damage_per_second: float = Field(default=.15, gt=0, le=1)
     support_buff_min_mp: float = Field(default=.6, gt=0, le=1)
     support_buff_emergency_hp: float = Field(default=.35, gt=0, lt=1)
+    support_mass_buff_enabled: bool = True
+    support_mass_buff3_key: str | None = "NUM3"
+    support_mass_buff4_key: str | None = "NUM4"
+    support_mass_buff5_key: str | None = "NUM5"
+    support_mass_buff6_key: str | None = "NUM6"
+    support_mass_buff7_key: str | None = "NUM7"
+    support_mass_buff8_key: str | None = "NUM8"
+    support_mass_buff9_key: str | None = "NUM9"
+    support_mass_buff0_key: str | None = "NUM0"
+    support_mass_buff_divide_key: str | None = "NUMDIVIDE"
+    support_mass_buff_multiply_key: str | None = "NUMMULTIPLY"
+    support_mass_buff_cast_seconds: float = Field(default=1, ge=.1, le=60)
+    support_mass_buff_min_mp: float = Field(default=.09, gt=0, le=1)
     rest: str = "="
     heal: str = "F2"
     buff_key: str = "F1"
@@ -59,6 +81,17 @@ class DuoConfig(MeleeConfig):
     support_party_heal_threshold: float = Field(default=.6, gt=0, le=1)
     support_party_heal_cast_seconds: float = Field(default=1, ge=.1, le=30)
     support_party_heal_cooldown: float = Field(default=5, ge=.1, le=300)
+    support_lifeimpact_key: str | None = "9"
+    support_lifeimpact_cast_seconds: float = Field(default=1, ge=.1, le=30)
+    support_lifeimpact_cooldown: float = Field(default=15, ge=15, le=86400)
+    support_lifeimpact_hp_threshold: float = Field(default=.7, gt=0, lt=1)
+    support_lifeimpact_emergency_hp: float = Field(default=.2, gt=0, lt=1)
+    support_lifeimpact_regen_remaining: float = Field(default=10, gt=0, le=15)
+    support_preserv_key: str | None = "="
+    support_preserv_cast_seconds: float = Field(default=1, ge=.1, le=30)
+    support_preserv_cooldown: float = Field(default=20, ge=20, le=86400)
+    support_preserv_hp_threshold: float = Field(default=.47, gt=0, lt=1)
+    support_preserv_damage_per_second: float = Field(default=.05, gt=0, le=1)
     stop_attack_key: str = "ESC"
     defense_target_key: str = "3"
     buff_seconds: float = Field(default=10, ge=1, le=60)
@@ -98,8 +131,13 @@ class DuoConfig(MeleeConfig):
             raise ValueError("Интервал ребаффа должен быть больше длительности баффа")
         return self
 
-    @field_validator("support_buff2_key", "ud_key", "mass_aggro_key", "heal_key", "support_self_heal_key", "support_potion_key",
-                     "support_vampiric_key", "support_party_heal_key")
+    @field_validator("support_mass_buff3_key", "support_mass_buff4_key", "support_mass_buff5_key",
+                     "support_mass_buff6_key", "support_mass_buff7_key", "support_mass_buff8_key",
+                     "support_mass_buff9_key", "support_mass_buff0_key", "support_mass_buff_divide_key",
+                     "support_mass_buff_multiply_key",
+                     "summon_key", "support_buff2_key", "ud_key", "mass_aggro_key", "heal_key", "support_self_heal_key", "support_potion_key",
+                     "support_vampiric_key", "support_party_heal_key", "support_preserv_key",
+                     "support_lifeimpact_key")
     @classmethod
     def optional_heal_key(cls, value: str | None) -> str | None:
         if value is None or not value.strip():
@@ -143,7 +181,7 @@ def format_duo_settings(config: DuoConfig) -> str:
              "# START запускается с вкладки «Дуо: МА + саппорт».",
              '# Пати-реген отключается строкой: set support_party_heal_key ""', ""]
     for name, value in config.model_dump(mode="json").items():
-        if name == "max_seconds":
+        if name == "max_seconds" or name in INACTIVE_MELEE_SETTINGS:
             # Один параметр времени исключает конфликт часов и секунд при правке.
             continue
         if name == "buff_key":
@@ -204,6 +242,10 @@ class DuoFarmer(MeleeFarmer):
         self.support = support
         self.support_life = support_life
         self.support_lost = False
+        self.summon_recovery = SummonRecovery()
+        self.summon_servicing = False
+        self.summon_casting = False
+        self.summon_defending = False
         self.observation = observation or (lambda payload: None)
         self.last_heal = float("-inf")
         self.support_heal_ready: dict[str, float] = {}
@@ -217,7 +259,11 @@ class DuoFarmer(MeleeFarmer):
         self.support_vampiric_attempts = 0
         self.support_vampiric_verify = False
         self.support_party_heal_ready = float("-inf")
+        self.support_preserv_ready = float("-inf")
         self.support_party_regen_until = float("-inf")
+        self.support_ma_chant_until = float("-inf")
+        self.support_ma_chant_generation = controller.pause_generation
+        self.support_lifeimpact_ready = float("-inf")
         self.support_party_heal_attempts = 0
         self.party_heal_status_at = float("-inf")
         self.party_profile = party_profile
@@ -227,6 +273,11 @@ class DuoFarmer(MeleeFarmer):
         self.support_buff_stage = 0
         self.support_buff_started = 0.
         self.buff_mp_reason = ""
+        self.mass_buff_index = 0
+        self.mass_buff_active = False
+        self.post_summon_mass_buff = False
+        self.mass_buff_ready = float("-inf")
+        self.mass_buff_generation = controller.pause_generation
         self.previous_resources: dict[str, float | None] = {}
         self.resource_generation = controller.pause_generation
         self.resources_at = float("-inf")
@@ -234,6 +285,14 @@ class DuoFarmer(MeleeFarmer):
         self.party_damage_now = False
         self.party_damage_sources: tuple[str, ...] = ()
         self.party_hp_damage_rates: dict[str, float] = {}
+        self.summon_damage_rate: float | None = None
+        self.summon_damage_until = float("-inf")
+        self.strong_damage_until = float("-inf")
+        self.strong_aggressor: tuple[str, int | None, int] | None = None
+        self.strong_aggressor_selections = 0
+        self.strong_aggressor_allowed: tuple[str, int | None, int] | None = None
+        self.strong_aggressor_pending = False
+        self.strong_aggressor_generation = controller.pause_generation
         self.mass_aggro_ready_at = float("-inf")
         self.mass_aggro_casting = False
         self.support_damage_until = float("-inf")
@@ -270,8 +329,13 @@ class DuoFarmer(MeleeFarmer):
                     f"откат {config.support_vampiric_cooldown:g} с")
         self.report(f"Пати-реген {config.support_party_heal_key or 'отключён'}: "
                     f"эффект {PARTY_REGEN_SECONDS:g} с, восстановление HP каждую секунду; "
-                    f"до {PARTY_REGEN_RETRIES} повторов по откату, удержание 0.3 с; "
+                    f"до {PARTY_REGEN_RETRIES} повторов по откату, двойное нажатие с паузой 85 мс; "
                     f"эликсир МА при HP <{config.hp_elixir_hp_threshold:.0%}")
+        self.report(f"LifeImpact {config.support_lifeimpact_key or 'отключён'}: только МА, +15% max HP; "
+                    f"HP <{config.support_lifeimpact_hp_threshold:.0%}, остаток ChantOfLife "
+                    f"<{config.support_lifeimpact_regen_remaining:g} с, при HP "
+                    f"<{config.support_lifeimpact_emergency_hp:.0%} без ожидания; "
+                    "наличие баффа определяется расчётным таймером")
 
     def track_ud_damage(self, hp: float, now: float) -> None:
         if (self.ud_generation != self.controller.pause_generation
@@ -373,6 +437,23 @@ class DuoFarmer(MeleeFarmer):
         self.update_support_recovery(support_hp)
         previous_hp = self.previous_resources.get("support_hp")
         elapsed = now - self.resources_at
+        if (self.resource_generation != self.controller.pause_generation
+                or not 0 <= elapsed <= 1
+                or any(name.endswith("_hp") and previous is not None
+                       and (resources.get(name) is None or resources[name] <= 0)
+                       for name, previous in self.previous_resources.items())):
+            self.strong_damage_until = float("-inf")
+            self.reset_strong_aggressor_search()
+        elif elapsed > 0:
+            for name, value in resources.items():
+                previous = self.previous_resources.get(name)
+                if (name.endswith("_hp") and value is not None and previous is not None
+                        and 0 < value < previous
+                        and (previous - value) / elapsed >= self.config.mass_aggro_damage_per_second - 1e-9):
+                    self.strong_damage_until = now + self.config.damage_memory_seconds
+                    break
+        if now >= self.strong_damage_until:
+            self.reset_strong_aggressor_search()
         self.party_hp_damage_rates.clear()
         if self.resource_generation == self.controller.pause_generation and 0 < elapsed <= 1:
             for name, value in resources.items():
@@ -380,6 +461,19 @@ class DuoFarmer(MeleeFarmer):
                 if (name != "farmer_hp" and name.endswith("_hp")
                         and value is not None and previous is not None and 0 < value < previous):
                     self.party_hp_damage_rates[name] = (previous - value) / elapsed
+        summon_hp = resources.get("summon_hp")
+        previous_summon_hp = self.previous_resources.get("summon_hp")
+        if (self.resource_generation != self.controller.pause_generation
+                or not 0 <= elapsed <= 1
+                or summon_hp is None or previous_summon_hp is None or summon_hp <= 0
+                or previous_summon_hp <= 0
+                or summon_hp > previous_summon_hp + self.config.damage_epsilon):
+            self.summon_damage_rate = None
+            self.summon_damage_until = float("-inf")
+        elif "summon_hp" in self.party_hp_damage_rates:
+            # Коротко сохраняем наблюдаемый урон, чтобы каст масс-агра не вытеснил Preserv.
+            self.summon_damage_rate = self.party_hp_damage_rates["summon_hp"]
+            self.summon_damage_until = now + self.config.damage_memory_seconds
         if (self.resource_generation != self.controller.pause_generation
                 or not 0 <= elapsed <= 1 or support_hp is None or previous_hp is None
                 or support_hp <= 0 or support_hp > previous_hp + self.config.damage_epsilon):
@@ -408,13 +502,23 @@ class DuoFarmer(MeleeFarmer):
         self.previous_resources = resources
         self.resource_generation = self.controller.pause_generation
         self.resources_at = now
+        if self.config.summon_key is not None:
+            if self.summon_recovery.observe(resources, now, self.controller.pause_generation,
+                                            self.party_damage_now, self.config.damage_epsilon):
+                reason = ("HP пантеры равно нулю" if resources.get("summon_hp") == 0
+                          else "HP/MP пантеры устойчиво не читаются")
+                self.report(f"{reason}: назначен призыв; "
+                            "текущую цель добиваем, новый поиск ждёт призыва и полного ребаффа")
+            if self.summon_casting and (self.party_damage_now or self.critical_party()):
+                self.cancel_summon_cast()
 
     def use_mass_aggro(self) -> bool:
         """
         Прикрывает сопартийцев массовым агром без смены текущей цели МА.
         """
         config = self.config
-        if config.mass_aggro_key is None or self.support_lost or self.mass_aggro_casting:
+        if (config.mass_aggro_key is None or self.support_lost or self.mass_aggro_casting
+                or self.saving_mana_for_summon()):
             return False
         self.check()
         now = self.controller.active_time()
@@ -500,12 +604,71 @@ class DuoFarmer(MeleeFarmer):
     def cast_buffs(self) -> None:
         if self.support_lost:
             return
+        if self.config.summon_key is not None and (not self.summon_recovery.checked
+                                                  or self.summon_recovery.pending):
+            return
+        if (not self.buffing and not self.summon_recovery.rebuff and self.config.support_mass_buff_enabled
+                and (self.post_summon_mass_buff or self.mass_buff_active or self.attacking or self.under_attack)
+                and self.controller.active_time() >= self.next_buff):
+            if self.cast_mass_buff():
+                return
+            super().cast_buffs()
+            return
         if not self.buffing and self.controller.active_time() >= self.next_buff:
             self.buff()
         else:
             super().cast_buffs()
 
+    def cast_mass_buff(self) -> bool:
+        """
+        Даёт один пати-бафф двойным нажатием и сразу возвращает окно МА.
+        """
+        generation = self.controller.pause_generation
+        if generation != self.mass_buff_generation:
+            self.mass_buff_index = 0
+            self.mass_buff_active = False
+            self.mass_buff_generation = generation
+        if self.controller.active_time() < self.mass_buff_ready:
+            return False
+        hp, _, _ = self.observe()
+        if not self.buff_health_safe(hp):
+            if self.critical_party():
+                self.mass_buff_index = 0
+                self.mass_buff_active = False
+            return False
+        keys = [getattr(self.config, f"support_mass_buff{slot}_key")
+                for slot in (3, 4, 5, 6, 7, 8, 9, 0, "_divide", "_multiply")]
+        keys = [key for key in keys if key is not None]
+        if not keys:
+            return False
+        mp = self.previous_resources.get("support_mp")
+        minimum = (self.config.support_mass_buff_min_mp if self.mass_buff_active or self.post_summon_mass_buff
+                   else self.config.support_buff_min_mp)
+        if mp is None or mp < minimum:
+            return False
+        key = keys[self.mass_buff_index]
+        sent_at = self.visit(key, .1, double_press=True)
+        if sent_at is None or generation != self.controller.pause_generation or self.support_lost:
+            return False
+        self.mass_buff_generation = generation
+        self.mass_buff_active = True
+        self.mass_buff_index += 1
+        self.mass_buff_ready = self.controller.active_time() + self.config.support_mass_buff_cast_seconds
+        self.buff_actions += 1
+        self.support_pending = True
+        self.report(f"Масс-пати бафф саппорта {self.mass_buff_index}/{len(keys)}: {key}, возврат к фарму")
+        if self.mass_buff_index == len(keys):
+            self.next_buff = self.controller.active_time() + self.config.rebuff_minutes * 60
+            self.mass_buff_index = 0
+            self.mass_buff_active = False
+            self.post_summon_mass_buff = False
+            self.report("Все масс-пати баффы саппорта нажаты; таймер следующего ребаффа запущен")
+        return True
+
     def buff_health_safe(self, hp: float) -> bool:
+        if self.summon_recovery.rebuff and not self.summon_recovery.quiet(
+                self.clock(), self.config.quiet_seconds, self.controller.pause_generation):
+            return False
         return super().buff_health_safe(hp) and not self.critical_party()
 
     def wait_for_buff(self, seconds: float) -> bool:
@@ -523,6 +686,8 @@ class DuoFarmer(MeleeFarmer):
     def buff(self) -> None:
         hp, _, _ = self.observe()
         if self.buffing or hp <= self.config.buff_min_hp or self.critical_party():
+            return
+        if self.summon_recovery.rebuff and not self.buff_health_safe(hp):
             return
         support_hp = self.previous_resources.get("support_hp")
         if support_hp is not None and support_hp < self.config.support_buff_emergency_hp:
@@ -598,22 +763,28 @@ class DuoFarmer(MeleeFarmer):
             self.controller.wait(min(self.config.poll_seconds, remaining))
 
     def visit(self, key: str, seconds: float, *, settle_seconds: float = 0.,
-              key_milliseconds: int = 80, repeat: bool = False, exact: bool = False) -> float | None:
+              key_milliseconds: int = 80, repeat: bool = False, exact: bool = False,
+              double_press: bool = False) -> float | None:
         if self.support_lost:
             return
         generation = self.controller.pause_generation
         self.check()
         self.controller.switch_window(self.support)
         self.observe_support_life()
+        if self.support_lost:
+            return None
         self.following = False
         if settle_seconds:
             # Игра должна успеть принять фокус; wait и key повторно проверяют его.
             self.controller.wait(settle_seconds)
             self.check()
         # При STOP или потере фокуса не перехватываем окно через finally.
-        self.controller.key(key, key_milliseconds, exact=exact or bool(settle_seconds))
-        sent_at = self.controller.active_time()
-        if repeat:
+        if double_press:
+            sent_at = self.send_support_skill(key, generation)
+        else:
+            self.controller.key(key, key_milliseconds, exact=exact or bool(settle_seconds))
+            sent_at = self.controller.active_time()
+        if repeat and not double_press:
             self.controller.wait(.15)
             self.check()
             if generation == self.controller.pause_generation:
@@ -623,6 +794,23 @@ class DuoFarmer(MeleeFarmer):
         self.controller.wait(seconds)
         self.check()
         self.controller.switch_window(self.farmer)
+        return sent_at
+
+    def send_support_skill(self, key: str, generation: int) -> float | None:
+        """
+        Дважды нажимает скилл с паузой 85 мс между отпусканием и нажатием.
+        """
+        self.check()
+        if self.support_lost or generation != self.controller.pause_generation:
+            return None
+        self.controller.key(key, 80, exact=True)
+        sent_at = self.controller.active_time()
+        self.controller.wait(SUPPORT_SKILL_REPEAT_SECONDS)
+        self.check()
+        if generation == self.controller.pause_generation:
+            self.observe_support_life()
+            if generation == self.controller.pause_generation and not self.support_lost:
+                self.controller.key(key, 80, exact=True)
         return sent_at
 
     def observe_support_life(self) -> None:
@@ -653,6 +841,9 @@ class DuoFarmer(MeleeFarmer):
             # После мгновенного эликсира не тратим УД по старому низкому HP.
             return
         if hp is None or mp is None:
+            self.summon_recovery.invalidate()
+            if self.summon_casting:
+                self.cancel_summon_cast()
             self.support_resources(image)
             if hp is None:
                 self.ud_hp_samples.clear()
@@ -668,6 +859,11 @@ class DuoFarmer(MeleeFarmer):
             self.party_damage_now = False
             self.party_damage_sources = ()
             self.party_hp_damage_rates.clear()
+            self.summon_damage_rate = None
+            self.summon_damage_until = float("-inf")
+            self.strong_damage_until = float("-inf")
+            self.reset_strong_aggressor_search()
+            self.strong_aggressor_allowed = None
             self.support_damage_until = float("-inf")
             self.support_damage_rate = None
             self.update_support_recovery(None)
@@ -684,7 +880,7 @@ class DuoFarmer(MeleeFarmer):
                           "support_buff_active": self.buffing,
                           "buffs_pending": self.controller.active_time() >= self.next_buff
                           or any(getattr(self.config, f"buff{slot}_key") is not None
-                                 and self.clock() >= self.buff_ready[slot] for slot in range(1, 4))})
+                                 and self.clock() >= self.buff_ready[slot] for slot in range(1, 6))})
 
     def _observe(self, resources_only: bool = False) -> tuple[float | None, float | None, float | None]:
         """
@@ -727,7 +923,11 @@ class DuoFarmer(MeleeFarmer):
                         and (hp < previous[0] or self.own_cp is not None and previous[1] is not None
                              and self.own_cp < previous[1]))
         fresh_damage = fresh_damage or self.party_damage_now
+        if self.summon_servicing:
+            # Для призыва используем общий порог пати, а не любое дрожание полосы МА.
+            fresh_damage = self.party_damage_now
         if ((fresh_damage or self.controller.active_time() < self.damage_until)
+                and not self.summon_casting
                 and (not self.casting_ma_buff or hp <= self.config.buff_min_hp)):
             # Не меняем погибшую/пропавшую цель во время подтверждения смерти и лута.
             if (not self.alive_target(target) and target != 0 and fresh_damage
@@ -751,6 +951,14 @@ class DuoFarmer(MeleeFarmer):
                         self.attacking = True
         if self.update_support_buff():
             hp, mp, target = self.observe_ma()
+        if ((self.mass_buff_active or self.controller.active_time() < self.mass_buff_ready)
+                and self.critical_party()):
+            self.visit(self.config.stop_attack_key, .1)
+            self.mass_buff_active = False
+            self.mass_buff_index = 0
+            self.mass_buff_ready = float("-inf")
+            self.next_buff = min(self.next_buff, self.controller.active_time())
+            self.report("Критическое HP пати: серия масс-пати баффов прервана; после спасения повторим её сначала")
         if self.support_maintenance(hp, target):
             hp, mp, target = self.observe_ma()
             if self.update_support_buff():
@@ -772,9 +980,11 @@ class DuoFarmer(MeleeFarmer):
                 if self.self_heals >= self.config.heal_attempts:
                     raise RuntimeError("HP саппорта не восстановился после лимита попыток собственного хила")
                 self.report(f"Собственный хил саппорта: HP {support_hp:.0%}")
-                self.visit(self.config.support_self_heal_key, self.config.heal_seconds)
-                self.mark_support_heal(self.config.support_self_heal_key)
-                self.self_heals += 1
+                sent_at = self.visit(self.config.support_self_heal_key, self.config.heal_seconds,
+                                     double_press=True)
+                if sent_at is not None:
+                    self.mark_support_heal(self.config.support_self_heal_key)
+                    self.self_heals += 1
                 # После собственного хила заново читаем состояние МА и его цели.
                 hp, mp, target = self.observe_ma()
         if hp >= self.config.heal_threshold:
@@ -786,9 +996,10 @@ class DuoFarmer(MeleeFarmer):
             if self.heals >= self.config.heal_attempts:
                 raise RuntimeError("HP не восстановился после лимита попыток хила")
             self.report(f"Хил МА: HP {hp:.0%}")
-            self.visit(self.config.heal_key, self.config.heal_seconds)
-            self.mark_support_heal(self.config.heal_key)
-            self.heals += 1
+            sent_at = self.visit(self.config.heal_key, self.config.heal_seconds, double_press=True)
+            if sent_at is not None:
+                self.mark_support_heal(self.config.heal_key)
+                self.heals += 1
             # Действия по цели используют только новый кадр после возврата.
             hp, mp, target = self.observe_ma()
         if self.escaping:
@@ -831,8 +1042,70 @@ class DuoFarmer(MeleeFarmer):
         self.support_attack_generation = self.controller.pause_generation
 
     def invalidate_target(self) -> None:
+        self.strong_aggressor_allowed = None
+        self.strong_aggressor_pending = False
         self.reset_support_attack()
         super().invalidate_target()
+
+    def reset_strong_aggressor_search(self) -> None:
+        self.strong_aggressor = None
+        self.strong_aggressor_selections = 0
+
+    def strong_aggressor_identity(self) -> tuple[str, int | None, int] | None:
+        identity = self.monster_identity()
+        maxima = self.target_hp_maxima()
+        target = self.last_target
+        if (identity is None or maxima is None or target is None
+                or target.hp is None or target.hp <= 0 or target.dead or target.death_marker
+                or target.player_class or target.clan):
+            return None
+        return *identity, maxima[1]
+
+    def target_hp_too_large(self) -> bool:
+        if (self.strong_aggressor_generation != self.controller.pause_generation
+                or self.strong_aggressor_identity() != self.strong_aggressor_allowed):
+            self.strong_aggressor_allowed = None
+        return super().target_hp_too_large() and self.strong_aggressor_allowed is None
+
+    def press(self, key: str) -> None:
+        if key == self.config.next_target:
+            self.strong_aggressor_allowed = None
+            self.strong_aggressor_pending = False
+            if self.strong_aggressor_generation != self.controller.pause_generation:
+                self.reset_strong_aggressor_search()
+            self.strong_aggressor_generation = self.controller.pause_generation
+        super().press(key)
+        if key == self.config.next_target:
+            self.strong_aggressor_pending = True
+
+    def reject_unsafe_target(self) -> bool:
+        # Одна попытка — одна отправленная команда next target, не число проверок CV.
+        if self.strong_aggressor_pending:
+            self.strong_aggressor_pending = False
+            identity = self.strong_aggressor_identity()
+            now = self.controller.active_time()
+            if (identity is None or not super().target_hp_too_large()
+                    or self.strong_aggressor_generation != self.controller.pause_generation
+                    or self.resource_generation != self.controller.pause_generation
+                    or not 0 <= now - self.resources_at <= 1
+                    or now >= self.strong_damage_until or self.observation_recovering
+                    or self.support_lost):
+                self.reset_strong_aggressor_search()
+            else:
+                if identity != self.strong_aggressor:
+                    self.reset_strong_aggressor_search()
+                    self.strong_aggressor = identity
+                self.strong_aggressor_selections += 1
+                self.report(f"Поиск сильного агрессора «{identity[0]}»: "
+                            f"{self.strong_aggressor_selections}/{STRONG_AGGRESSOR_SELECTIONS}; "
+                            "подтверждён сильный урон по пати")
+                if self.strong_aggressor_selections >= STRONG_AGGRESSOR_SELECTIONS:
+                    self.strong_aggressor_allowed = identity
+                    self.unsafe_target_rejected = False
+                    self.report(f"Ответная атака по «{identity[0]}»: HP-ограничение снято "
+                                "до завершения боя или смены цели после 6 выборов агрессора")
+                    self.reset_strong_aggressor_search()
+        return super().reject_unsafe_target()
 
     def track_support_attack(self, target: float | None) -> None:
         identity = self.monster_identity()
@@ -942,6 +1215,115 @@ class DuoFarmer(MeleeFarmer):
             return True
         return False
 
+    def use_support_preserv(self, hp: float) -> bool:
+        """
+        Макрос Preserv выбирает МА; барьер также дублируется на его саммона.
+        """
+        config = self.config
+        now = self.controller.active_time()
+        if (config.support_preserv_key is None
+                or self.support_lost or self.buffing or hp <= 0
+                or self.party_profile is None
+                or (self.previous_resources.get("support_hp") or 0) <= 0
+                or self.resource_generation != self.controller.pause_generation
+                or not 0 <= now - self.resources_at <= 1
+                or now < self.support_preserv_ready):
+            return False
+        heavy = (self.ud_damage_rate is not None
+                 and self.ud_damage_rate > config.support_preserv_damage_per_second)
+        summon_hp = self.previous_resources.get("summon_hp")
+        summon_heavy = (summon_hp is not None and summon_hp > 0
+                        and now < self.summon_damage_until
+                        and self.summon_damage_rate is not None
+                        and self.summon_damage_rate > config.support_preserv_damage_per_second + 1e-9)
+        wounded = [(name, value) for name, value in (("МА", hp), ("саммон", summon_hp))
+                   if value is not None and 0 < value < config.support_preserv_hp_threshold]
+        if not wounded and not heavy and not summon_heavy:
+            return False
+        reasons = [f"{name} HP {value:.1%}" for name, value in wounded]
+        if heavy:
+            reasons.append(f"сильный урон по МА {self.ud_damage_rate:.1%}/с")
+        if summon_heavy:
+            reasons.append(f"сильный урон по пантере {self.summon_damage_rate:.1%}/с, HP {summon_hp:.1%}")
+        generation = self.controller.pause_generation
+        self.check()
+        self.controller.switch_window(self.support)
+        self.observe_support_life()
+        self.following = False
+        if generation != self.controller.pause_generation:
+            self.controller.switch_window(self.farmer)
+            return False
+        sent_at = self.send_support_skill(config.support_preserv_key, generation)
+        if sent_at is None:
+            self.controller.switch_window(self.farmer)
+            return False
+        self.support_preserv_ready = sent_at + config.support_preserv_cooldown
+        self.report("Preserv саппорта на МА и саммона: " + "; ".join(reasons)
+                    + f"; кнопка {config.support_preserv_key}, каст {config.support_preserv_cast_seconds:g} с; "
+                    "длительность баффа 10 с; "
+                    "отправка не подтверждает получение барьера")
+        self.controller.wait(max(0., sent_at + config.support_preserv_cast_seconds
+                                  - self.controller.active_time()))
+        self.check()
+        self.controller.switch_window(self.farmer)
+        self.support_pending = self.attacking
+        return True
+
+    def lifeimpact_available(self, hp: float | None) -> bool:
+        """
+        Проверяет свежее HP МА и расчётный ChantOfLife, отдельно от регена всей пати.
+        """
+        config = self.config
+        now = self.controller.active_time()
+        remaining = self.support_ma_chant_until - now
+        chant_started = self.support_ma_chant_until - PARTY_REGEN_SECONDS
+        return (config.support_lifeimpact_key is not None and not self.support_lost
+                and not self.buffing and hp is not None and 0 < hp < config.support_lifeimpact_hp_threshold
+                and self.party_profile is not None
+                and (self.previous_resources.get("support_hp") or 0) > 0
+                and self.resource_generation == self.support_ma_chant_generation == self.controller.pause_generation
+                and 0 <= now - self.resources_at <= 1
+                and now >= self.support_lifeimpact_ready
+                and now >= chant_started and remaining > 0
+                and (hp < config.support_lifeimpact_emergency_hp
+                     or remaining < config.support_lifeimpact_regen_remaining))
+
+    def use_support_lifeimpact(self, hp: float) -> bool:
+        """
+        Макрос выбирает только МА, применяет LifeImpact и возобновляет следование.
+        """
+        if not self.lifeimpact_available(hp):
+            return False
+        config = self.config
+        generation = self.controller.pause_generation
+        self.check()
+        self.controller.switch_window(self.support)
+        self.observe_support_life()
+        # Переключение окна и проверка жизни могут пережить бафф или паузу.
+        self.check()
+        if not self.lifeimpact_available(hp):
+            self.controller.switch_window(self.farmer)
+            return False
+        remaining = self.support_ma_chant_until - self.controller.active_time()
+        sent_at = self.send_support_skill(config.support_lifeimpact_key, generation)
+        if sent_at is None:
+            self.controller.switch_window(self.farmer)
+            return False
+        self.support_lifeimpact_ready = sent_at + config.support_lifeimpact_cooldown
+        # Успех не подтверждён: консервативно считаем ChantOfLife на МА израсходованным.
+        self.support_ma_chant_until = float("-inf")
+        self.report(f"LifeImpact на МА: HP {hp:.1%}, расчётный остаток ChantOfLife {remaining:.1f} с; "
+                    f"кнопка {config.support_lifeimpact_key}, два нажатия с паузой 85 мс; "
+                    "+15% max HP при успехе, применение не подтверждено")
+        self.check()
+        self.controller.switch_window(self.farmer)
+        self.wait_with_emergency_checks(max(0., sent_at + config.support_lifeimpact_cast_seconds
+                                             - self.controller.active_time()))
+        self.following = generation == self.controller.pause_generation
+        self.follow_generation = generation
+        self.support_pending = self.attacking
+        return True
+
     def support_maintenance(self, hp: float, target: float | None) -> bool:
         if self.support_lost:
             return False
@@ -972,6 +1354,11 @@ class DuoFarmer(MeleeFarmer):
         # Зелье не прерывает бафф; остальные скиллы ждут его завершения или отмены.
         if self.buffing:
             return False
+        if self.use_support_preserv(hp):
+            return True
+        # Готовый точечный хил не должен ждать нового F9, обновляющего таймер ChantOfLife.
+        if self.use_support_lifeimpact(hp):
+            return True
         wounded = [(name, value) for name, value in (
             ("МА", hp), ("саппорт", support_hp), ("самон", self.previous_resources.get("summon_hp")))
             if value is not None and 0 < value < config.support_party_heal_threshold]
@@ -981,13 +1368,16 @@ class DuoFarmer(MeleeFarmer):
             reason = ", ".join(f"{name} HP {value:.1%}" for name, value in wounded)
             self.report(f"Пати-хил саппорта: {reason}")
             new_series = now >= self.support_party_regen_until
-            sent_at = self.visit(config.support_party_heal_key, .1, key_milliseconds=300, exact=True)
+            generation = self.controller.pause_generation
+            sent_at = self.visit(config.support_party_heal_key, .1, double_press=True)
             if sent_at is None:
                 return False
             cast_end = sent_at + config.support_party_heal_cast_seconds
             self.mark_support_heal(config.support_party_heal_key, at=cast_end)
             self.support_party_heal_attempts = 1 if new_series else self.support_party_heal_attempts + 1
             self.support_party_regen_until = cast_end + PARTY_REGEN_SECONDS
+            self.support_ma_chant_until = self.support_party_regen_until
+            self.support_ma_chant_generation = generation
             self.support_party_heal_ready = max(cast_end + config.support_party_heal_cooldown,
                                                 self.support_heal_ready[config.support_party_heal_key])
             if self.support_party_heal_attempts >= 1 + PARTY_REGEN_RETRIES:
@@ -996,7 +1386,7 @@ class DuoFarmer(MeleeFarmer):
                                                     self.support_party_regen_until)
             self.report(f"Пати-реген {config.support_party_heal_key} отправлен: "
                         f"попытка {self.support_party_heal_attempts}/{1 + PARTY_REGEN_RETRIES}, "
-                        "удержание 0.3 с; расчётный эффект 15 с, применение каста не подтверждено")
+                        "двойное нажатие с паузой 85 мс; расчётный эффект 15 с, применение каста не подтверждено")
             self.wait_with_emergency_checks(max(0., cast_end - self.controller.active_time()))
             return True
         if wounded and now - self.party_heal_status_at >= 2:
@@ -1013,7 +1403,8 @@ class DuoFarmer(MeleeFarmer):
             self.report(f"Вампирик саппорта: своё HP {support_hp:.0%}, HP монстра {target:.1%}; "
                         f"попытка лечения {self.support_vampiric_attempts + 1}")
             generation = self.controller.pause_generation
-            self.visit_vampiric(repeat=now < self.support_damage_until)
+            if not self.visit_vampiric(repeat=now < self.support_damage_until):
+                return False
             self.mark_support_heal(config.support_vampiric_key)
             self.support_vampiric_ready = self.controller.active_time() + config.support_vampiric_cooldown
             # Кнопка и ожидание каста не доказывают лечение: низкое HP сохраняет приоритет спасения.
@@ -1024,41 +1415,59 @@ class DuoFarmer(MeleeFarmer):
             return True
         return False
 
-    def visit_vampiric(self, *, repeat: bool = False) -> None:
-        if self.support_lost:
-            return
+    def visit_vampiric(self, *, repeat: bool = False) -> bool:
+        if self.support_lost or not self.validate_target_before_attack():
+            return False
         generation = self.controller.pause_generation
         self.check()
         self.controller.switch_window(self.support)
         self.observe_support_life()
         self.controller.wait(.15)
         self.check()
+        if generation != self.controller.pause_generation:
+            self.controller.switch_window(self.farmer)
+            return False
         # Игровой макрос ассиста выбирает монстра МА перед вампириком.
         self.controller.key(self.config.support_key, 150, exact=True)
         self.controller.wait(self.config.support_seconds)
-        self.controller.key(self.config.support_vampiric_key, 150, exact=True)
-        if repeat:
-            self.controller.wait(.15)
-            self.check()
-            if generation == self.controller.pause_generation:
-                self.observe_support_life()
-                self.controller.key(self.config.support_vampiric_key, 150, exact=True)
-                self.report("Аварийный повтор вампирика саппорта: 2/2, пауза 150 мс")
+        sent_at = self.send_support_skill(self.config.support_vampiric_key, generation)
         self.check()
         self.controller.switch_window(self.farmer)
+        if sent_at is None:
+            return False
         self.wait_with_emergency_checks(self.config.support_vampiric_cast_seconds)
         if repeat:
             # Следующий свежий цикл лечения важнее отдельного визита для обычного ассиста.
             self.support_rescue_until = self.controller.active_time() + self.config.poll_seconds
             self.support_rescue_generation = generation
         self.following = False
+        return True
 
     def protect(self) -> tuple[float | None, bool]:
         _, _, target = self.observe()
         dead = target == 0 or (self.last_target is not None and self.last_target.dead is True)
         return target, dead
 
+    def saving_mana_for_summon(self) -> bool:
+        """
+        Сохраняет MP МА до подтверждения пантеры, разрешая только автоатаку.
+        """
+        return (self.config.summon_key is not None and not self.support_lost
+                and (not self.summon_recovery.checked or self.summon_recovery.pending))
+
+    def saving_mana_for_buffs(self) -> bool:
+        return self.saving_mana_for_summon() or super().saving_mana_for_buffs()
+
+    def open_with_aggro(self) -> None:
+        # Спасательный агр тоже расходует ману, необходимую для призыва.
+        if not self.saving_mana_for_summon():
+            super().open_with_aggro()
+
     def combat_key(self, key: str, duration: int) -> bool:
+        if (self.saving_mana_for_summon() and key != self.config.attack
+                and key in {self.config.aggro_key, self.config.vampiric_key, self.config.ud_key,
+                            *self.config.damage_keys, *self.config.overhit_keys}):
+            return False
         if self.support_attack_generation != self.controller.pause_generation:
             self.reset_support_attack()
         if not super().combat_key(key, duration):
@@ -1075,14 +1484,15 @@ class DuoFarmer(MeleeFarmer):
         return True
 
     def assist_support(self) -> None:
-        if (self.support_lost or self.escaping or self.buffing or self.verifying_target
+        if (self.target_validating or self.support_lost or self.escaping or self.buffing or self.verifying_target
+                or self.controller.active_time() < self.mass_buff_ready
                 or self.casting_ma_buff or not self.attacking or not self.support_attack_started
                 or (not self.config.experimental_fast_farm and not self.support_attack_confirmed)
                 or self.support_in_danger()
                 or self.critical_party()
                 or (self.support_rescue_generation == self.controller.pause_generation
                     and self.controller.active_time() < self.support_rescue_until)
-                or self.reject_unsafe_target()):
+                or self.reject_unsafe_target() or not self.validate_target_before_attack()):
             return
         self.report("Живая цель МА: запускаем ассист саппорта")
         # После смены окна игра должна принять фокус до нажатия макроса.
@@ -1107,6 +1517,8 @@ class DuoFarmer(MeleeFarmer):
         self.ensure_support_follow()
 
     def ensure_support_follow(self) -> None:
+        if not self.escaping and self.controller.active_time() < self.mass_buff_ready:
+            return
         if not self.following or self.follow_generation != self.controller.pause_generation:
             generation = self.controller.pause_generation
             reason = "Выход МА из застревания" if self.escaping else "Next target не выбрал живую цель"
@@ -1138,13 +1550,227 @@ class DuoFarmer(MeleeFarmer):
         super().switch_fast_target()
         self.support_attack_started = self.fast_target_ready
 
+    def allow_fast_target_switch(self) -> bool:
+        return (super().allow_fast_target_switch() and not self.summon_servicing
+                and not self.summon_recovery.pending and not self.summon_recovery.rebuff)
+
+    def cancel_summon_cast(self) -> None:
+        self.controller.key(self.config.stop_attack_key, 80, exact=True)
+        self.summon_casting = False
+        self.report("Призыв пантеры прерван: урон, опасное HP или потеря наблюдения; "
+                    "сначала защищаем пати, затем повторяем проверку безопасности")
+
+    def summon_mana_ready(self) -> bool:
+        """
+        Требует свежего MP МА не ниже стоимости одного призыва пантеры.
+        """
+        return (self.last_mp is not None and self.last_mp >= SUMMON_MIN_MP
+                and self.resource_generation == self.controller.pause_generation
+                and 0 <= self.clock() - self.resources_at <= 1)
+
+    def cast_summon(self) -> None:
+        state = self.summon_recovery
+        if self.config.summon_key is None or not state.pending:
+            return
+        if state.attempts >= SUMMON_MAX_ATTEMPTS:
+            raise RuntimeError(f"Пантера не подтверждена после {SUMMON_MAX_ATTEMPTS} попыток призыва; "
+                               "фарм остановлен")
+        if self.sitting:
+            self.press(self.config.stand)
+            self.sitting = False
+            state.quiet_since = None
+            return
+        self.check()
+        generation = self.controller.pause_generation
+        started = self.clock()
+        if (not state.quiet(started, self.config.quiet_seconds, generation)
+                or not self.summon_mana_ready()):
+            return
+        self.controller.key(self.config.summon_key, 100, exact=True)
+        state.attempts += 1
+        state.ready_at = started + self.config.summon_cooldown
+        until = started + self.config.summon_cast_seconds
+        self.summon_casting = True
+        self.report(f"Призыв пантеры: попытка {state.attempts}/{SUMMON_MAX_ATTEMPTS}, {self.config.summon_key}; "
+                    f"каст {self.config.summon_cast_seconds:g} с, "
+                    f"откат {self.config.summon_cooldown:g} с от начала")
+        try:
+            while self.summon_casting:
+                self.check()
+                if generation != self.controller.pause_generation:
+                    self.cancel_summon_cast()
+                    state.invalidate()
+                    return
+                self.observe()
+                if not self.summon_casting:
+                    return
+                if (generation != self.controller.pause_generation or state.quiet_since is None
+                        or state.quiet_since > started):
+                    self.cancel_summon_cast()
+                    return
+                remaining = until - self.clock()
+                if remaining <= 0:
+                    hp = self.previous_resources.get("summon_hp")
+                    if hp is None or hp <= 0:
+                        mp = self.previous_resources.get("summon_mp")
+                        readings = ", ".join(f"{name} {value:.1%}" if value is not None
+                                             else f"{name} неизвестно"
+                                             for name, value in (("HP", hp), ("MP", mp)))
+                        self.report(f"Пантера не подтверждена после каста: попытка "
+                                    f"{state.attempts}/{SUMMON_MAX_ATTEMPTS}; {readings}")
+                        if state.attempts >= SUMMON_MAX_ATTEMPTS:
+                            raise RuntimeError(f"Пантера не подтверждена после "
+                                               f"{SUMMON_MAX_ATTEMPTS} попыток призыва; фарм остановлен")
+                    return
+                self.controller.wait(min(self.config.poll_seconds, remaining))
+        finally:
+            self.summon_casting = False
+
+    def service_summon(self) -> None:
+        """
+        Ожидает призыва; при нехватке MP переносит пати-баффы в обычный фарм.
+        """
+        state = self.summon_recovery
+        if self.config.summon_key is None or self.summon_servicing:
+            return
+        if state.checked and not state.pending and not state.rebuff:
+            return
+        self.summon_servicing = True
+        progress_at = self.clock()
+        progress = (state.attempts, state.pending, state.rebuff, self.buff_actions)
+        report_at = self.clock() + 10
+        self.report(f"Проверка пантеры: перед призывом ждём {self.config.quiet_seconds:g} с "
+                    "свежего наблюдения без урона по пати")
+        try:
+            while not state.checked or state.pending or state.rebuff:
+                self.check()
+                _, _, target = self.observe()
+                current = (state.attempts, state.pending, state.rebuff, self.buff_actions)
+                if current != progress:
+                    progress_at = self.clock()
+                    progress = current
+                reason = state.wait_reason(self.previous_resources, self.clock(),
+                                           self.config.quiet_seconds, self.controller.pause_generation)
+                if state.pending and not self.summon_mana_ready():
+                    mp = "неизвестно" if self.last_mp is None else f"{self.last_mp:.1%}"
+                    reason += f"; MP МА {mp}, для призыва требуется ≥10%; защита только автоатакой"
+                    if (self.last_mp is not None and self.last_mp < SUMMON_MIN_MP
+                            and self.resource_generation == self.controller.pause_generation
+                            and 0 <= self.clock() - self.resources_at <= 1
+                            and all(self.previous_resources.get(name) is not None
+                                    for name in state.required_resources)):
+                        # Известное низкое MP разрешает ждать регена дольше watchdog.
+                        # Пропуски обязательных наблюдений по-прежнему ограничены по времени.
+                        progress_at = self.clock()
+                if self.critical_party():
+                    reason += f"; опасное HP пати: {self.critical_party()}"
+                if state.rebuff:
+                    reason += (f"; ребафф, MP саппорта: {self.previous_resources.get('support_mp')}, "
+                               f"порог {self.config.support_buff_min_mp:g}")
+                # Штатный длинный макрос и cooldown не считаем зависанием.
+                timeout = max(SUMMON_STALL_SECONDS,
+                              self.config.summon_cooldown + self.config.quiet_seconds + 1)
+                if not self.buffing and self.clock() - progress_at >= timeout:
+                    raise RuntimeError(f"Восстановление пантеры без прогресса {timeout:g} с: {reason}; "
+                                       f"попыток призыва {state.attempts}/{SUMMON_MAX_ATTEMPTS}; фарм остановлен")
+                if self.clock() >= report_at:
+                    self.report(f"Ожидание восстановления пантеры: {reason}; "
+                                f"без прогресса {self.clock() - progress_at:.0f}/{timeout:g} с; "
+                                f"попыток призыва {state.attempts}/{SUMMON_MAX_ATTEMPTS}")
+                    report_at = self.clock() + 10
+                if self.attacking and self.alive_target(target):
+                    self.summon_defending = True
+                    try:
+                        self.fight(target)
+                    finally:
+                        self.summon_defending = False
+                    state.quiet_since = None
+                    continue
+                # Пропавшее HP цели не разрешает сохранять неизвестную автоатаку при призыве.
+                if self.attacking or self.fast_target_ready:
+                    self.controller.key(self.config.stop_attack_key, 80, exact=True)
+                    self.attacking = self.fast_target_ready = False
+                    self.reset_support_attack()
+                    state.quiet_since = None
+                if state.pending and (self.previous_resources.get("summon_hp") or 0) > 0:
+                    if self.buffing:
+                        # Макрос, начатый до появления пантеры, не считается её ребаффом.
+                        self.visit(self.config.stop_attack_key, .1)
+                        self.buffing = False
+                        self.support_buff_until = None
+                        self.support_buff_stage = 0
+                        state.quiet_since = None
+                    state.pending = False
+                    state.rebuff = True
+                    state.attempts = 0
+                    # Баффы, отправленные до появления пантеры, ей не засчитываются.
+                    self.mass_buff_index = 0
+                    self.mass_buff_active = False
+                    self.post_summon_mass_buff = False
+                    self.mass_buff_ready = float("-inf")
+                    self.next_buff = float("-inf")
+                    for slot in self.buff_ready:
+                        self.buff_ready[slot] = float("-inf")
+                    self.report("Пантера подтверждена по свежему HP: полный ребафф саппорта и МА")
+                if state.rebuff and not state.pending and not self.buffing:
+                    mp = self.previous_resources.get("support_mp")
+                    keys = [getattr(self.config, f"support_mass_buff{slot}_key")
+                            for slot in (3, 4, 5, 6, 7, 8, 9, 0, "_divide", "_multiply")]
+                    if (self.config.support_mass_buff_enabled and any(keys)
+                            and (mp is None or mp < self.config.support_buff_min_mp)):
+                        # Очередь баффов обслуживается обычным фармом без ожидания регена MP.
+                        self.post_summon_mass_buff = True
+                        state.rebuff = False
+                        state.attempts = 0
+                        self.report("MP саппорта недостаточно для полного ребаффа: продолжаем фарм, "
+                                    "пати-баффы накладываем по очереди по мере появления MP")
+                        return
+                if state.checked and not state.pending and not state.rebuff:
+                    return
+                if (not self.buffing and not self.critical_party()
+                        and 0 <= self.clock() - state.observed_at <= 1
+                        and all(self.previous_resources.get(name) is not None
+                                for name in state.required_resources)):
+                    # Ожидание самона не отключает штатный watchdog неудачных боёв.
+                    self.summon_defending = True
+                    try:
+                        escaped = self.escape_if_no_kills()
+                    finally:
+                        self.summon_defending = False
+                    if escaped:
+                        state.quiet_since = None
+                        continue
+                if state.quiet(self.clock(), self.config.quiet_seconds, self.controller.pause_generation):
+                    if (state.pending and self.clock() >= state.ready_at
+                            and not self.critical_party() and self.summon_mana_ready()):
+                        self.cast_summon()
+                        continue
+                    if state.rebuff and not state.pending:
+                        self.cast_buffs()
+                        if (not state.pending and (self.previous_resources.get("summon_hp") or 0) > 0
+                                and not self.buffing and not self.buffs_due()):
+                            state.rebuff = False
+                            state.attempts = 0
+                            self.report("Ребафф после призыва завершён: поиск и атака мобов разрешены")
+                            return
+                self.controller.wait(self.config.poll_seconds)
+        finally:
+            self.summon_servicing = False
+
     def run(self) -> None:
         try:
+            if self.config.summon_key is not None:
+                if not isinstance(self.profile, BarProfile) or self.profile.summon is None:
+                    raise RuntimeError("Для автопризыва настройте панель самона в окне МА "
+                                       "или отключите summon_key")
+                if self.party_profile is None:
+                    raise RuntimeError("Для безопасного автопризыва настройте наблюдение пати МА")
             self.controller.switch_window(self.farmer)
             self.observe()
             cycle = 0
             while cycle < self.config.cycles:
                 try:
+                    self.service_summon()
                     self.run_cycle(cycle)
                     cycle += 1
                 except Rebuffed:
@@ -1173,7 +1799,14 @@ class DuoFarmer(MeleeFarmer):
     def before_target_selection(self) -> None:
         if self.support_lost:
             raise SupportDied("Саппорт погиб: выбор новых целей запрещён")
+        if not self.summon_defending:
+            self.service_summon()
         super().before_target_selection()
+
+    def cancel_target_run(self) -> None:
+        if self.support_lost:
+            raise SupportDied("Саппорт погиб: текущая цель недоступна, фарм завершён без движения")
+        super().cancel_target_run()
 
     def escape_from_unreachable(self, name: str | None, *,
                                 blocked_names: set[str] | None = None) -> float | None:

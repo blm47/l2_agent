@@ -27,7 +27,7 @@ def test_replay_regression_retries_without_healing_even_below_thirty_percent(mon
         if attempts > 1:
             controller.now = duo.support_vampiric_ready
         duo.observe()
-        assert controller.events.count((2, "F2")) == attempts
+        assert controller.events.count((2, "F2")) == attempts * 2
         # Ассист нужен только внутри подготовки вампирика, отдельных визитов между кастами нет.
         assert controller.events.count((2, duo.config.support_key)) == attempts
         assert duo.support_vampiric_recovering
@@ -45,7 +45,7 @@ def test_recovery_keeps_cooldown_and_resumes_assist_only_after_hp_recovers(monke
     ready = duo.support_vampiric_ready
     controller.now = ready - .01
     duo.observe()
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
     assert controller.events.count((2, duo.config.support_key)) == 1
     assert duo.support_pending
     # Даже прирост HP недостаточен, пока не достигнут заданный порог восстановления.
@@ -56,7 +56,7 @@ def test_recovery_keeps_cooldown_and_resumes_assist_only_after_hp_recovers(monke
     reader.return_value = .7
     duo.observe()
     assert not duo.support_vampiric_recovering
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
     assert controller.events.count((2, duo.config.support_key)) == 2
 
 
@@ -109,7 +109,7 @@ def test_recovery_does_not_cast_on_missing_or_dead_target(monkeypatch, target_hp
     target[0] = target_hp
     controller.now = duo.support_vampiric_ready
     duo.observe()
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
     assert (1, duo.config.next_target) not in controller.events
 
 
@@ -122,7 +122,7 @@ def test_recovery_preserves_target_safety(monkeypatch, kind, dead):
     duo.last_target = TargetObservation(at=controller.now, kind=kind, hp=.01, dead=dead,
                                        death_marker=dead, confidence=.99)
     duo.observe()
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
 
 
 @pytest.mark.parametrize("support_hp", [None, 0.])
@@ -138,5 +138,5 @@ def test_unknown_or_dead_support_does_not_allow_another_recovery_cast(monkeypatc
         assert duo.support_lost
     else:
         duo.observe()
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
     assert not duo.support_vampiric_recovering

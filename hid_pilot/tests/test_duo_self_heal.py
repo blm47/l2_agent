@@ -22,7 +22,7 @@ def observed_duo(monkeypatch, support_hp, **settings):
 def test_low_party_hp_uses_self_macro_and_returns_to_farmer(monkeypatch):
     duo, controller, _ = observed_duo(monkeypatch, .4, support_party_slot=2)
     duo.observe()
-    assert controller.events == [("window", 2), (2, "F2"), ("window", 1)]
+    assert controller.events == [("window", 2), (2, "F2"), (2, "F2"), ("window", 1)]
     duo.party_profile.box.assert_any_call("hp", 1)
     duo.party_profile.box.assert_any_call("mp", 1)
     assert controller.role == FARMER
@@ -65,7 +65,7 @@ def test_self_macro_works_with_farmer_macro_disabled(monkeypatch):
     duo, controller, _ = observed_duo(monkeypatch, .4, heal_key=None)
     controller.capture = lambda: (.4, .9, False)
     duo.observe()
-    assert controller.events == [("window", 2), (2, "F2"), ("window", 1)]
+    assert controller.events == [("window", 2), (2, "F2"), (2, "F2"), ("window", 1)]
 
 
 @pytest.mark.parametrize("stale,paused", [(True, False), (False, True)])
@@ -87,7 +87,7 @@ def test_self_heal_has_separate_attempt_limit(monkeypatch):
     controller.wait(duo.config.heal_cooldown)
     with pytest.raises(RuntimeError, match="HP саппорта"):
         duo.observe()
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
 
 
 def test_healing_does_not_interrupt_active_support_buff_above_emergency_threshold(monkeypatch):

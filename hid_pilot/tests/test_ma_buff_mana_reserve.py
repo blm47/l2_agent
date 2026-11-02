@@ -101,3 +101,24 @@ def test_ud_does_not_spend_ma_mana_while_self_rebuff_is_waiting():
     duo.on_observation(None, .06, .05, .9)
     assert controller.events == []
     assert duo.ud_ready_at == float("-inf")
+
+
+def test_mana_reserve_blocks_direct_skill_commands_until_rebuff():
+    farmer, controller, _, _ = harness(buff1_key="F5", damage_keys=("F7",),
+                                       overhit_keys=("F8",), vampiric_key="F9")
+    farmer.last_mp = .05
+    for key in ("F7", "F8", "F9"):
+        assert not farmer.combat_key(key, 100)
+    farmer.last_mp = .5
+    assert not farmer.combat_key("F8", 100)
+    farmer.cast_buffs()
+    assert farmer.combat_key("F8", 100)
+    assert [call.args[0] for call in controller.key.call_args_list] == ["F5", "F8"]
+
+
+def test_mana_reserve_allows_defensive_aggro():
+    farmer, controller, _, _ = harness(buff1_key="F5", aggro_key="2")
+    farmer.last_mp = .05
+    farmer.under_attack = True
+    farmer.open_with_aggro()
+    controller.key.assert_called_once_with("2", 100)

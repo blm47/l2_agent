@@ -234,6 +234,8 @@ class Farmer:
         successes = 0
         recovery_started = 0.
         recovery_attempts = math.ceil(60 / self.config.observation_delay)
+        mp_lost_at = None
+        mp_warning_at = float("-inf")
         for attempt in range(self.config.observation_attempts + recovery_attempts):
             self.observation_recovering = recovering
             self.observation_failure = ""
@@ -246,6 +248,20 @@ class Farmer:
                 hp, mp, target = self._observe()
             if target is not None:
                 self.target_pending = target > 0
+            if mp is None:
+                if mp_lost_at is None:
+                    mp_lost_at = self.clock()
+                if self.clock() - mp_warning_at >= 10:
+                    logger.warning("Потеря MP: %s; HP=%s; чтение=%s; причина кадра=%s; прошло %.1f/60 с",
+                                   self.observation_details.get("mp", "источник неизвестен"), hp,
+                                   self.observation_timings, self.observation_failure,
+                                   self.clock() - mp_lost_at)
+                    mp_warning_at = self.clock()
+                if self.clock() - mp_lost_at >= 60:
+                    raise RuntimeError("HP/MP не распознаны: MP неизвестно в течение 60 с; фарм остановлен")
+            elif mp_lost_at is not None:
+                logger.info("Распознавание MP восстановлено через %.1f с: %.1f%%", self.clock() - mp_lost_at, mp * 100)
+                mp_lost_at = None
             if hp is not None and mp is not None:
                 successes += 1
                 if recovering and successes < 3:

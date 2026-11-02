@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import Mock
 from pydantic import ValidationError
 
 from hid_pilot.farm_melee import MeleeConfig
@@ -184,3 +185,33 @@ def test_real_fight_uses_vampiric_then_independent_potion():
 def test_invalid_skill_settings_are_rejected(field, value):
     with pytest.raises(ValidationError):
         MeleeConfig(rest="=", **{field: value})
+
+
+@pytest.mark.parametrize("duo_mode", [False, True])
+def test_fourth_and_fifth_buffs_have_independent_timers(duo_mode):
+    options = dict(buff4_key="F6", buff4_cast_seconds=2, buff4_rebuff_minutes=1,
+                   buff5_key="F7", buff5_cast_seconds=3, buff5_rebuff_minutes=2)
+    if duo_mode:
+        farmer, controller = make_duo(heal_key=None, **options)
+        farmer.next_buff = float("inf")
+        controller.key = Mock(wraps=controller.key)
+    else:
+        farmer, controller, _, _ = harness(**options)
+    assert farmer.buffs_due()
+    farmer.cast_buffs()
+    assert [call.args for call in controller.key.call_args_list] == [("F6", 100), ("F7", 100)]
+    assert farmer.buff_ready[5] > farmer.buff_ready[4]
+    assert not farmer.buffs_due()
+    farmer.buff_ready[4] = 0
+    assert farmer.buffs_due()
+    farmer.cast_buffs()
+    assert controller.key.call_count == 3
+    assert controller.key.call_args.args == ("F6", 100)
+
+
+@pytest.mark.parametrize("slot", [4, 5])
+@pytest.mark.parametrize("suffix,value", [("key", "ALT+TAB"), ("cast_seconds", -1),
+                                        ("rebuff_minutes", 0)])
+def test_new_buff_slots_reject_invalid_settings(slot, suffix, value):
+    with pytest.raises(ValidationError):
+        MeleeConfig(rest="=", **{f"buff{slot}_{suffix}": value})

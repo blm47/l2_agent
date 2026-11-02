@@ -47,9 +47,9 @@ def test_small_damage_diffs_are_kept():
     assert farmer.estimated_damage(None) == pytest.approx(.001)
 
 
-def test_name_line_preprocessing_uses_recognition_without_detection():
+def test_name_line_preprocessing_accepts_confident_tight_crop_without_detection():
     reader = NumbersReader()
     reader.engine = Mock(side_effect=[([["Gremiin", .91]], None), ([["Gremlin", .99]], None)])
-    assert reader.read_text(np.full((20, 120, 3), 200, dtype=np.uint8)) == ("Gremlin", .99)
-    assert reader.engine.call_count == 2
+    assert reader.read_text(np.full((20, 120, 3), 200, dtype=np.uint8)) == ("Gremiin", .91)
+    assert reader.engine.call_count == 1
     assert all(call.kwargs["use_det"] is False for call in reader.engine.call_args_list)

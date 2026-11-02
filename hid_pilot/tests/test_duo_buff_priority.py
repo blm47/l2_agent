@@ -105,6 +105,8 @@ def test_healthy_ma_can_buff_while_attack_is_active():
 
     controller.wait.side_effect = wait
     farmer.cast_buffs()
+    assert [call.args[0] for call in controller.key.call_args_list] == ["NUM9"]
+    farmer.cast_buffs()
     assert [call.args[0] for call in controller.key.call_args_list] == ["NUM9", "NUM0"]
 
 
@@ -126,9 +128,9 @@ def test_mass_heal_of_low_party_support_is_independent_of_single_heal_cooldown(m
     duo.last_heal = controller.now
     duo.observe()
     assert (2, "F2") in controller.events
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
     duo.observe()
-    assert controller.events.count((2, "F2")) == 1
+    assert controller.events.count((2, "F2")) == 2
 
 
 def test_aggro_is_not_used_as_overhit_even_in_legacy_configuration():

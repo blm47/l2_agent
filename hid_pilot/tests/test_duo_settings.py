@@ -1,6 +1,7 @@
 import pytest
 
 from hid_pilot.duo import DuoConfig, format_duo_settings, parse_duo_settings
+from hid_pilot.farm_melee import INACTIVE_MELEE_SETTINGS
 
 
 def test_set_format_supports_comments_lists_and_optional_heal():
@@ -28,6 +29,18 @@ def test_all_settings_roundtrip_through_script_and_legacy_json():
     assert "set max_seconds" not in text
     assert parse_duo_settings(text) == config
     assert parse_duo_settings(config.model_dump_json()) == config
+
+
+def test_legacy_inactive_values_are_accepted_and_omitted_from_new_scripts():
+    config = parse_duo_settings('set target_attempts 17\nset defense_target_key F8\nset loot_delay 2\n')
+    assert config.target_attempts == 17
+    assert config.defense_target_key == "F8"
+    assert config.loot_delay == 2
+    text = format_duo_settings(config)
+    for name in INACTIVE_MELEE_SETTINGS:
+        assert f"set {name} " not in text
+    restored = parse_duo_settings(text)
+    assert restored.model_dump(exclude=INACTIVE_MELEE_SETTINGS) == config.model_dump(exclude=INACTIVE_MELEE_SETTINGS)
 
 
 @pytest.mark.parametrize("text", ['key R 100', 'set heal_key F9\nset heal_key F8',

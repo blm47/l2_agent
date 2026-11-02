@@ -9,7 +9,8 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette, QWheelEvent
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLabel, QPlainTextEdit, QScrollArea
 
 from hid_pilot.duo import DuoConfig, format_duo_settings
-from hid_pilot.farm_settings import FarmSettings, setting_description
+from hid_pilot.farm_melee import INACTIVE_MELEE_SETTINGS
+from hid_pilot.farm_settings import FarmSettings, setting_description, setting_visible
 
 
 @pytest.fixture
@@ -22,6 +23,99 @@ def widgets():
     editor.close()
 
 
+@pytest.mark.parametrize("duo", [False, True])
+def test_inactive_settings_are_read_but_not_shown(widgets, duo):
+    editor, _, _ = widgets
+    text = 'set observation_movement true\nset target_attempts 17\nset rest "="\n'
+    editor.setPlainText(text if duo else text + 'farm_melee "farm-bars.json"\n')
+    settings = FarmSettings(editor, duo=duo)
+    try:
+        assert INACTIVE_MELEE_SETTINGS.isdisjoint(settings.fields)
+        assert settings.read_config().target_attempts == 17
+        assert settings.read_config().observation_movement
+    finally:
+        settings.close()
+
+
+@pytest.mark.parametrize("key, dependent", [
+    (f"buff{slot}_key", f"buff{slot}_cast_seconds") for slot in range(1, 6)
+] + [
+    ("vampiric_key", "vampiric_hp_threshold"),
+    ("hp_elixir_key", "hp_elixir_cooldown"),
+    ("support_vampiric_key", "support_vampiric_cooldown"),
+    ("support_hp_elixir_key", "support_hp_elixir_hp_threshold"),
+    ("support_potion_key", "support_potion_cooldown"),
+    ("support_party_heal_key", "support_party_heal_threshold"),
+    ("support_lifeimpact_key", "support_lifeimpact_regen_remaining"),
+    ("support_preserv_key", "support_preserv_damage_per_second"),
+    ("mass_aggro_key", "mass_aggro_cooldown"),
+    ("ud_key", "ud_damage_per_second"),
+    ("summon_key", "summon_cast_seconds"),
+    ("support_buff2_key", "support_buff2_seconds"),
+    ("heal_key", "heal_threshold"),
+    ("support_self_heal_key", "support_self_heal_threshold"),
+])
+def test_optional_action_hides_parameters_and_restores_saved_values(widgets, key, dependent):
+    editor, _, _ = widgets
+    config = DuoConfig.model_validate({key: "F7"})
+    editor.setPlainText(format_duo_settings(config))
+    settings = FarmSettings(editor, duo=True)
+    try:
+        original = settings.fields[dependent].text()
+        assert not settings.fields[dependent].isHidden()
+        settings.fields[key].setText('""')
+        settings.apply_field(key)
+        assert settings.fields[dependent].isHidden()
+        assert settings.labels[dependent].isHidden()
+        settings.fields[key].setText('"F7"')
+        settings.apply_field(key)
+        assert not settings.fields[dependent].isHidden()
+        assert not settings.labels[dependent].isHidden()
+        assert settings.fields[dependent].text() == original
+    finally:
+        settings.close()
+
+
+def test_loot_toggle_preserves_additional_pickup_choice(widgets):
+    editor, settings, _ = widgets
+    editor.setPlainText('set rest "="\nset pickup_loot false\nset loot_before_farm true\n'
+                        'farm_melee "farm-bars.json"\n')
+    assert not settings.fields["pickup_loot"].isHidden()
+    for name in ("loot", "loot_before_farm", "loot_attempts", "loot_hold"):
+        assert settings.fields[name].isHidden()
+    settings.fields["pickup_loot"].setCurrentIndex(1)
+    assert settings.read_config().loot_before_farm
+    assert not settings.fields["loot_before_farm"].isHidden()
+    assert settings.fields["loot_before_farm"].currentData() is True
+
+
+def test_modes_hide_only_their_dependent_parameters(widgets):
+    editor, settings, _ = widgets
+    editor.setPlainText('set rest "="\nset overhit_keys "F7"\nfarm_melee "farm-bars.json"\n')
+    for name in ("rest", "stand", "hp_rest_threshold", "hp_resume", "mp_threshold", "mp_resume", "rest_timeout"):
+        assert settings.fields[name].isHidden()
+    assert not settings.fields["quiet_seconds"].isHidden()
+    settings.fields["regen_enabled"].setCurrentIndex(1)
+    assert not settings.fields["rest"].isHidden()
+    settings.fields["experimental_fast_farm"].setCurrentIndex(1)
+    for name in ("overhit_margin", "overhit_hp_threshold", "overhit_early_chance", "overhit_during_combat"):
+        assert settings.fields[name].isHidden()
+    assert not settings.fields["overhit_hold_ms"].isHidden()
+    assert not settings.fields["fast_target_hp_threshold"].isHidden()
+    settings.fields["experimental_fast_farm"].setCurrentIndex(0)
+    assert not settings.fields["overhit_margin"].isHidden()
+    assert settings.fields["fast_target_hp_threshold"].isHidden()
+
+
+def test_shared_heal_parameters_remain_until_both_heals_disabled():
+    config = DuoConfig(heal_key="F7", support_self_heal_key=None)
+    assert setting_visible("heal_cooldown", config)
+    config.heal_key = None
+    assert not setting_visible("heal_cooldown", config)
+    config.support_self_heal_key = "F8"
+    assert setting_visible("heal_cooldown", config)
+
+
 def test_groups_include_buffs_vampiric_and_separate_potion(widgets):
     _, settings, _ = widgets
     titles = [settings.groups.itemText(index) for index in range(settings.groups.count())]
@@ -30,6 +124,60 @@ def test_groups_include_buffs_vampiric_and_separate_potion(widgets):
     assert "МА — зелье" in titles
     assert settings.fields["buff_min_mp"].parentWidget() is settings.fields["buff1_key"].parentWidget()
     assert settings.read_config().buff_min_mp == .1
+
+
+@pytest.mark.parametrize("duo", [False, True])
+def test_search_movement_boolean_is_saved_independently(widgets, duo):
+    editor, _, _ = widgets
+    if duo:
+        editor.setPlainText(format_duo_settings(DuoConfig()))
+    settings = FarmSettings(editor, duo=duo)
+    try:
+        assert settings.read_config().search_movement
+        settings.fields["search_movement"].setCurrentIndex(0)
+        assert not settings.read_config().search_movement
+        assert settings.read_config().random_movement is False
+        assert "set search_movement false" in editor.toPlainText()
+        settings.fields["search_movement"].setCurrentIndex(1)
+        assert settings.read_config().search_movement
+    finally:
+        settings.close()
+
+
+def test_support_mass_buff_group_edits_and_disables_buttons(widgets):
+    editor, _, _ = widgets
+    editor.setPlainText(format_duo_settings(DuoConfig()))
+    settings = FarmSettings(editor, duo=True)
+    try:
+        assert settings.groups.findText("Масс-пати баффы Саппорта") >= 0
+        assert settings.read_config().support_mass_buff3_key == "NUM3"
+        assert settings.read_config().support_mass_buff_multiply_key == "NUMMULTIPLY"
+        settings.fields["support_mass_buff3_key"].setText('""')
+        settings.apply_field("support_mass_buff3_key")
+        assert settings.read_config().support_mass_buff3_key is None
+        settings.fields["support_mass_buff_enabled"].setCurrentIndex(0)
+        assert not settings.read_config().support_mass_buff_enabled
+    finally:
+        settings.close()
+
+
+def test_summon_settings_have_separate_group_and_save_cast_cooldown_and_disable(widgets):
+    editor, _, _ = widgets
+    editor.setPlainText(format_duo_settings(DuoConfig()))
+    settings = FarmSettings(editor, duo=True)
+    try:
+        titles = [settings.groups.itemText(index) for index in range(settings.groups.count())]
+        assert "МА — призыв пантеры" in titles
+        assert settings.read_config().summon_key == "NUM6"
+        for name, value in (("summon_cast_seconds", "21"), ("summon_cooldown", "6")):
+            settings.fields[name].setText(value)
+            settings.apply_field(name)
+            assert getattr(settings.read_config(), name) == float(value)
+        settings.fields["summon_key"].setText('""')
+        settings.apply_field("summon_key")
+        assert settings.read_config().summon_key is None
+    finally:
+        settings.close()
 
 
 def test_strong_hp_elixir_settings_share_potion_groups_for_each_role(widgets):
@@ -272,7 +420,7 @@ def test_boolean_settings_colors_follow_selection_and_script(widgets, duo):
     colors = {False: ("#b71c1c", "#ffebee"), True: ("#1b5e20", "#e8f5e9")}
     try:
         for name, definition in settings.config_type.model_fields.items():
-            if definition.annotation is not bool:
+            if definition.annotation is not bool or name in INACTIVE_MELEE_SETTINGS:
                 continue
             field = settings.fields[name]
             for value in (True, False):
@@ -303,7 +451,7 @@ def test_boolean_settings_colors_follow_selection_and_script(widgets, duo):
 def test_all_boolean_settings_use_dropdowns(widgets):
     _, settings, _ = widgets
     for name, definition in settings.config_type.model_fields.items():
-        if definition.annotation is bool:
+        if definition.annotation is bool and name not in INACTIVE_MELEE_SETTINGS:
             assert isinstance(settings.fields[name], QComboBox)
 
 
@@ -324,7 +472,8 @@ def test_descriptions_fit_their_rows_in_all_groups_after_resize(widgets, duo, la
             for _ in range(4):
                 app.processEvents()
             page = settings.pages.currentWidget().widget()
-            descriptions = sorted(page.findChildren(QLabel), key=lambda label: label.y())
+            descriptions = sorted((label for label in page.findChildren(QLabel) if not label.isHidden()),
+                                  key=lambda label: label.y())
             assert descriptions
             for label in descriptions:
                 assert label.height() >= label.heightForWidth(label.width()), label.objectName()
@@ -341,3 +490,26 @@ def layout_font(widgets):
     yield QFont("Segoe UI", 10)
     if font_id >= 0:
         QFontDatabase.removeApplicationFont(font_id)
+
+
+@pytest.mark.parametrize("duo_mode", [False, True])
+def test_new_ma_buff_slots_are_editable_and_saved(widgets, duo_mode):
+    editor, _, _ = widgets
+    if duo_mode:
+        editor.setPlainText(format_duo_settings(DuoConfig()))
+    settings = FarmSettings(editor, duo=duo_mode)
+    try:
+        for slot in (4, 5):
+            for suffix, value in (("key", '"F7"'), ("cast_seconds", "2"),
+                                  ("rebuff_minutes", "10")):
+                name = f"buff{slot}_{suffix}"
+                assert settings.fields[name].parentWidget() is settings.fields["buff1_key"].parentWidget()
+                assert setting_description(name)
+                settings.fields[name].setText(value)
+                settings.apply_field(name)
+            config = settings.read_config()
+            assert getattr(config, f"buff{slot}_key") == "F7"
+            assert getattr(config, f"buff{slot}_cast_seconds") == 2
+            assert getattr(config, f"buff{slot}_rebuff_minutes") == 10
+    finally:
+        settings.close()

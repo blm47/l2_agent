@@ -169,7 +169,7 @@ def test_search_does_not_run_wasd_while_under_attack():
     farmer, controller, _, state = harness(regen_enabled=False, search_moves=2)
     farmer.under_attack = True
     state[:] = [.5, 1., None]
-    with pytest.raises(RuntimeError, match="не нашли мобов"):
+    with pytest.raises(RuntimeError, match="не нашли подходящую живую цель"):
         farmer.acquire()
     assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target] * 3
 
@@ -179,7 +179,10 @@ def test_unreachable_target_is_dropped_quickly_when_taking_damage():
     farmer.under_attack = True
     farmer.fight(.9)
     assert now[0] < 3
-    assert controller.key.call_args_list[-1].args[0] == "ESC"
+    assert controller.key.call_args_list[-2].args[0] == "ESC"
+    assert controller.key.call_args_list[-1].args[0] in "WASD"
+    assert controller.key.call_args_list[-1].args[1] == 300
+    assert controller.key.call_args_list[-1].kwargs == {"exact": True}
 
 
 def test_existing_defensive_attack_is_not_delayed_by_opening_loot():

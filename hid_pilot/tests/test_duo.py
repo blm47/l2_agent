@@ -53,7 +53,11 @@ class FakeController:
 
 
 def make_duo(**values):
+    values.setdefault("support_mass_buff_enabled", False)
+    values.setdefault("summon_key", None)
     # Старые сценарии изолированы от нового отдельного расходника.
+    values.setdefault("support_preserv_key", None)
+    values.setdefault("support_lifeimpact_key", None)
     values.setdefault("hp_elixir_key", None)
     values.setdefault("support_hp_elixir_key", None)
     values.setdefault("buff_delay_minutes", 0)
@@ -177,7 +181,7 @@ def test_two_immediate_targets_do_not_enable_follow_between_kills():
 def test_missing_target_enables_follow_once_before_search_movement():
     farmer, controller = make_duo(search_moves=1, search_cycles=1)
     controller.capture = lambda: (1., None, False)
-    with pytest.raises(RuntimeError, match="не нашли мобов"):
+    with pytest.raises(RuntimeError, match="не нашли подходящую живую цель"):
         farmer.acquire()
     assert controller.events.count((2, farmer.config.follow_key)) == 1
     follow_at = controller.events.index((2, farmer.config.follow_key))
@@ -406,7 +410,7 @@ def test_heal_has_priority_and_uses_new_frame_after_return():
     duo, controller = make_duo()
     controller.frames = iter([(.59, .8, False), (.8, 0., True)])
     assert duo.protect() == (0., True)
-    assert controller.events == [("window", 2), (2, "F4"), ("window", 1)]
+    assert controller.events == [("window", 2), (2, "F4"), (2, "F4"), ("window", 1)]
     assert controller.role == FARMER
 
 
@@ -415,7 +419,7 @@ def test_heal_cooldown_and_attempt_limit():
     controller.frames = iter([(.4, .8, False)])
     duo.protect()
     duo.protect()
-    assert controller.events.count((2, "F4")) == 1
+    assert controller.events.count((2, "F4")) == 2
     controller.wait(2)
     with pytest.raises(RuntimeError, match="лимита попыток"):
         duo.protect()
@@ -446,7 +450,7 @@ def test_unknown_target_never_becomes_death_or_loot():
 def test_search_has_attempt_limit_without_attack():
     duo, controller = make_duo(search_moves=1, search_cycles=1)
     controller.frames = iter([(1., None, False)])
-    with pytest.raises(RuntimeError, match="не нашли мобов"):
+    with pytest.raises(RuntimeError, match="не нашли подходящую живую цель"):
         duo.acquire()
     assert controller.events.count((1, "3")) == 2
     assert (1, "R") not in controller.events

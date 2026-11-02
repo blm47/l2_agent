@@ -55,7 +55,7 @@ def test_full_search_cycle_repeats_movement_next_target_and_chat():
     keys = [call.args for call in controller.key.call_args_list]
     assert sum(key == farmer.config.next_target for key, _ in keys) == 8
     assert sum(key in "WASD" for key, _ in keys) == 6
-    assert controller.target_by_name.call_count == 2
+    assert controller.target_by_name.call_count == 8
 
 
 def test_target_found_on_second_full_cycle_stops_search():
@@ -71,3 +71,42 @@ def test_target_found_on_second_full_cycle_stops_search():
     controller.target_by_name.side_effect = select
     assert farmer.acquire() == .7
     assert controller.target_by_name.call_count == 2
+
+
+def test_search_without_movement_retries_next_target_and_names():
+    farmer, controller, _, state = harness(search_cycles=2, search_movement=False)
+    state[2] = None
+    farmer.known_mobs = {"Gremlin": 1}
+    with pytest.raises(RuntimeError, match="циклов"):
+        farmer.acquire()
+    assert controller.key.call_count == 8
+    assert all(call.args[0] == farmer.config.next_target for call in controller.key.call_args_list)
+    assert controller.target_by_name.call_count == 8
+
+
+@pytest.mark.parametrize("kind,maximum", [("unknown", 30250), ("player", 1000), ("npc", 1000)])
+def test_rejected_next_target_still_tries_safe_named_monster(monkeypatch, kind, maximum):
+    from hid_pilot.farm import Farmer
+
+    farmer, controller, _, state = harness(search_movement=False, target_max_hp_multiplier=8)
+    del farmer.observe
+    farmer.known_mobs = {"Gremlin": 1}
+
+    def select_next(key, ms, **kwargs):
+        if key == farmer.config.next_target:
+            state[2] = 1.
+            farmer.last_target = TargetObservation(at=0, kind=kind, hp=1.)
+            farmer.observation_details = {"hp": "OCR 2625/2625", "target_hp": f"OCR 1/{maximum}"}
+
+    def select_name(name):
+        state[2] = .7
+        farmer.last_target = TargetObservation(at=0, name=name, kind="monster", hp=.7, confidence=.99)
+        farmer.observation_details = {"hp": "OCR 2625/2625", "target_hp": "OCR 700/1000"}
+
+    monkeypatch.setattr(Farmer, "observe", lambda self: tuple(state))
+    controller.key.side_effect = select_next
+    controller.target_by_name.side_effect = select_name
+    assert farmer.acquire() == .7
+    controller.target_by_name.assert_called_once_with("Gremlin")
+    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target, "ESC"]
+    assert not farmer.unsafe_target_rejected

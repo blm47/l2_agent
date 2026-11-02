@@ -5,6 +5,28 @@ import pytest
 from test_melee_farm import harness
 
 
+def test_missing_mp_warns_with_details_and_stops_after_one_minute(caplog):
+    farmer, controller, now, _ = harness()
+    del farmer.observe
+    farmer._observe = Mock(return_value=(.8, None, .5))
+    farmer.observation_details["mp"] = "OCR: конфликт чисел; confidence=0.99"
+    with pytest.raises(RuntimeError, match="MP неизвестно в течение 60"):
+        farmer.observe()
+    assert 60 <= now[0] <= 61
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert "конфликт чисел" in warnings[0].message
+    assert "confidence=0.99" in warnings[0].message
+    controller.key.assert_not_called()
+
+
+def test_mp_recovers_before_deadline(caplog):
+    farmer, _, now, _ = harness()
+    del farmer.observe
+    farmer._observe = Mock(side_effect=lambda: (.8, None if now[0] < 55 else .6, .5))
+    assert farmer.observe() == (.8, .6, .5)
+    assert now[0] < 60
+
+
 def test_own_hp_mp_can_be_read_on_thirtieth_attempt():
     farmer, controller, _, _ = harness(observation_movement=False)
     del farmer.observe

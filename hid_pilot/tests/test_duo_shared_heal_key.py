@@ -14,10 +14,10 @@ def test_f9_shared_by_single_and_party_heal_cannot_repeat_after_five_seconds(mon
     for delay in (5, 8, 11.99):
         controller.now = healed_at + delay
         duo.observe()
-        assert controller.events.count((2, "F9")) == 1
+        assert controller.events.count((2, "F9")) == 2
     controller.now = duo.support_party_heal_ready
     duo.observe()
-    assert controller.events.count((2, "F9")) == 2
+    assert controller.events.count((2, "F9")) == 4
 
 
 def test_shared_f9_uses_only_party_threshold_and_cannot_bypass_cooldown(monkeypatch):
@@ -30,13 +30,13 @@ def test_shared_f9_uses_only_party_threshold_and_cannot_bypass_cooldown(monkeypa
     assert controller.events.count((2, "F9")) == 0
     controller.capture = lambda: (.4, .9, False)
     duo.observe()
-    assert controller.events.count((2, "F9")) == 1
+    assert controller.events.count((2, "F9")) == 2
     controller.now = duo.last_heal + 11.99
     duo.observe()
-    assert controller.events.count((2, "F9")) == 1
+    assert controller.events.count((2, "F9")) == 2
     controller.now = duo.last_heal + 12
     duo.observe()
-    assert controller.events.count((2, "F9")) == 2
+    assert controller.events.count((2, "F9")) == 4
 
 
 @pytest.mark.parametrize("global_cooldown,party_cooldown", [(12, 5), (2, 15)])

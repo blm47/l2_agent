@@ -53,8 +53,8 @@ def test_fast_damage_repeats_vampiric_without_extra_assist_visit(monkeypatch):
     duo.observe()
     casts = [item for item in presses if item[0] == "F6"]
     assert len(casts) == 2
-    assert casts[1][3] - casts[0][3] == pytest.approx(.15)
-    assert all(item[1:3] == (150, {"exact": True}) for item in casts)
+    assert casts[1][3] - casts[0][3] == pytest.approx(.085)
+    assert all(item[1:3] == (80, {"exact": True}) for item in casts)
     assert controller.events.count((2, duo.config.support_key)) == 1
     assert controller.events.count(("window", 2)) == 1
     assert duo.support_pending
@@ -135,7 +135,11 @@ def test_emergency_second_press_respects_stop_pause_and_death(monkeypatch, key, 
     else:
         with pytest.raises(Stopped if interruption == "stop" else SupportDied):
             duo.observe()
-    assert controller.events.count((2, key)) == 1
+    expected = 0 if key == "F6" and interruption == "focus_pause" else 1
+    assert controller.events.count((2, key)) == expected
+    if expected == 0:
+        assert duo.support_vampiric_attempts == 0
+        assert duo.support_vampiric_ready == float("-inf")
 
 
 def test_potion_is_checked_on_refresh_after_vampiric_before_assist(monkeypatch):

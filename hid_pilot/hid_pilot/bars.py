@@ -155,7 +155,9 @@ class BarProfile(BaseModel):
                 return result.fraction, f"OCR {result.current}/{result.maximum}"
         if name not in self.bars:
             if name in self.numbers:
-                return None, "OCR: неизвестно"
+                reader = shared_numbers()
+                reason = getattr(getattr(reader, "diagnostics", None), "reason", "причина недоступна")
+                return None, f"OCR: неизвестно; {reason}; ROI={self.numbers[name]}; резервная полоса не настроена"
             raise RuntimeError(f"Полоса {name} не настроена")
         box = self.bars[name]
         crop = image[round(box.y1 * height):round(box.y2 * height),

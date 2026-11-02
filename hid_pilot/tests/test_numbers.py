@@ -46,7 +46,8 @@ def test_tight_name_crop_uses_single_recognition_without_detection():
 
 @pytest.mark.parametrize("text,score", [("0/0", .99), ("101/100", .99), ("O/58", .99),
                                       ("HP 5/100", .99), ("5/100", .7), ("/100", .99),
-                                      ("-5/100", .99), ("5/100/200", .99)])
+                                      ("-5/100", .99), ("5/100/200", .99),
+                                      ("577 1577", .99), ("5771577", .99)])
 def test_ambiguous_numbers_rejected(text, score):
     assert parse_numbers(text, score) is None
 
@@ -56,6 +57,10 @@ def test_conflicting_preprocessing_is_unknown():
     reader.engine = Mock(side_effect=[([["0/58", .99]], None), ([["8/58", .99]], None)])
     image = np.full((20, 80, 3), 200, dtype=np.uint8)
     assert reader.read(image) is None
+    assert "конфликт чисел" in reader.diagnostics.reason
+    assert "0/58" in reader.diagnostics.reason
+    assert "8/58" in reader.diagnostics.reason
+    assert "confidence=0.9900" in reader.diagnostics.reason
 
 
 def test_zero_hp_is_confirmed_by_independent_ocr_instead_of_cache():
@@ -121,6 +126,7 @@ def test_only_clipped_rows_do_not_produce_zero_hp():
 
 @pytest.mark.parametrize("filename,expected", [
     ("mp-442-with-world-text.png", (442, 442)),
+    ("mp-577-wide-roi.png", (577, 577)),
     ("target-zero-with-world-text.png", (0, 1659)),
 ])
 def test_real_ocr_preserves_outlined_digits_next_to_clipped_world_text(filename, expected):
@@ -130,3 +136,21 @@ def test_real_ocr_preserves_outlined_digits_next_to_clipped_world_text(filename,
     result = reader.read(image)
     assert result is not None
     assert (result.current, result.maximum) == expected
+
+
+@pytest.mark.parametrize("values,expected", [
+    (("577/577", "577/577"), (577, 577)),
+    (("577/577", "570/577"), None),
+    (("577 1577", "5771577"), None),
+])
+def test_tight_numeric_fallback_keeps_range_and_conflict_checks(values, expected):
+    image = cv2.imread(str(Path(__file__).parent / "fixtures" / "mp-577-wide-roi.png"))
+    reader = NumbersReader()
+    reader.engine = Mock(side_effect=[([[text, .99]], None)
+                                      for text in ("577 1577", "5771577", *values)])
+    result = reader.read(image)
+    if expected is None:
+        assert result is None
+    else:
+        assert (result.current, result.maximum) == expected
+    assert reader.engine.call_count == 4

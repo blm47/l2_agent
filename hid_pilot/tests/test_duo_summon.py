@@ -29,15 +29,15 @@ def summon_duo(hp=.4, mp=1., **settings):
 def test_only_wounded_summon_triggers_existing_party_heal_without_target_selection():
     duo, controller, _ = summon_duo()
     duo.observe()
-    assert controller.events == [("window", 2), (2, "F7"), ("window", 1)]
+    assert controller.events == [("window", 2), (2, "F7"), (2, "F7"), ("window", 1)]
     assert duo.previous_resources["summon_hp"] == .4
     assert not duo.support_lost
     assert any("самон HP 40.0%" in call.args[0] for call in duo.notify.call_args_list)
     duo.observe()
-    assert controller.events.count((2, "F7")) == 1
+    assert controller.events.count((2, "F7")) == 2
     controller.now = duo.support_party_heal_ready
     duo.observe()
-    assert controller.events.count((2, "F7")) == 2
+    assert controller.events.count((2, "F7")) == 4
 
 
 @pytest.mark.parametrize("hp", [0., .6, 1.])

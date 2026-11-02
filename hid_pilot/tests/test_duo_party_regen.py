@@ -22,21 +22,21 @@ def test_f9_allows_initial_cast_and_three_retries_then_waits_for_last_regen():
         assert duo.support_party_heal_ready < duo.support_party_regen_until
         controller.now = duo.support_party_heal_ready - .01
         duo.observe()
-        assert controller.events.count((2, "F9")) == attempt - 1
+        assert controller.events.count((2, "F9")) == (attempt - 1) * 2
         controller.now = duo.support_party_heal_ready
         duo.observe()
-        assert controller.events.count((2, "F9")) == attempt
+        assert controller.events.count((2, "F9")) == attempt * 2
     assert duo.support_party_heal_ready == duo.support_party_regen_until
     for _ in range(10):
         controller.wait(.2)
         duo.observe()
-    assert controller.events.count((2, "F9")) == 4
+    assert controller.events.count((2, "F9")) == 8
     assert duo.support_party_heal_attempts == 4
-    assert all(duration == 300 and kwargs == {"exact": True}
+    assert all(duration == 80 and kwargs == {"exact": True}
                for name, duration, kwargs, _ in presses if name == "F9")
     controller.now = duo.support_party_regen_until
     duo.observe()
-    assert controller.events.count((2, "F9")) == 5
+    assert controller.events.count((2, "F9")) == 10
     assert duo.support_party_heal_attempts == 1
 
 
@@ -50,7 +50,7 @@ def test_f9_retry_requires_fresh_living_wounded_party(hp):
     else:
         frame[:] = summon_scene(hp)[0]
     duo.observe()
-    assert controller.events.count((2, "F9")) == 1
+    assert controller.events.count((2, "F9")) == 2
     assert duo.support_party_heal_attempts == 1
 
 
@@ -61,7 +61,7 @@ def test_pause_and_old_frame_cannot_send_f9_retry_or_reset_attempt_budget():
     assert not duo.support_maintenance(1., .9)
     controller.pause_generation += 1
     assert not duo.support_maintenance(1., .9)
-    assert controller.events.count((2, "F9")) == 1
+    assert controller.events.count((2, "F9")) == 2
     assert duo.support_party_heal_attempts == 1
 
 
@@ -71,7 +71,7 @@ def test_slow_regen_increase_is_not_treated_as_proof_that_cast_cannot_be_retried
     frame[:] = summon_scene(.2)[0]
     controller.now = duo.support_party_heal_ready
     duo.observe()
-    assert controller.events.count((2, "F9")) == 2
+    assert controller.events.count((2, "F9")) == 4
 
 
 def test_party_regen_deadline_starts_at_press_not_after_slow_return():

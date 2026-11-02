@@ -306,7 +306,7 @@ def test_reopening_restores_position_size_tab_and_controls(monkeypatch):
     try:
         first.resize(700, 680)
         # На узком offscreen-экране Qt при восстановлении прижимает широкое окно к левому краю.
-        first.move(1, 35)
+        first.move(1, 23)
         first.tabs.setCurrentIndex(0)
         first.port.setText("COM7")
         first.auto_scope.setCurrentIndex(1)
@@ -671,7 +671,7 @@ def test_combined_review_save_and_cancel_preserve_correct_profiles(monkeypatch, 
     bar_path.write_text(BarProfile(width=200, height=800, bars={"mp": box}).model_dump_json(), "utf-8")
     party_path.write_text(party.model_dump_json(), "utf-8")
     before = (bar_path.read_bytes(), party_path.read_bytes())
-    dialog = Mock(boxes={"cp": box}, target_player_panel=box)
+    dialog = Mock(boxes={"cp": box}, target_player_panel=box, summon=None)
     dialog.chat_enabled = QCheckBox()
     dialog.chat_enabled.setChecked(True)
     dialog.system_chat = box

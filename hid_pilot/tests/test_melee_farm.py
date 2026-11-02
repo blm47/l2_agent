@@ -36,9 +36,12 @@ def test_approach_wait_starts_after_attack_and_switches_target():
     farmer.fight(1.)
     assert now[0] >= 5.1
     assert controller.key.call_args_list[0].args == ("R", 100)
-    assert controller.key.call_args_list[-1].args == ("ESC", 100)
+    assert controller.key.call_args_list[-2].args == ("ESC", 100)
+    assert controller.key.call_args_list[-1].args[0] in "WASD"
+    assert controller.key.call_args_list[-1].args[1] == 300
+    assert controller.key.call_args_list[-1].kwargs == {"exact": True}
     assert controller.key.call_count > 2
-    assert all(call.args == ("R", 100) for call in controller.key.call_args_list[:-1])
+    assert all(call.args == ("R", 100) for call in controller.key.call_args_list[:-2])
 
 
 def test_unreachable_target_is_cleared_before_next_selection_without_loot():
@@ -47,7 +50,7 @@ def test_unreachable_target_is_cleared_before_next_selection_without_loot():
     farmer.last_target = TargetObservation(at=0, kind="monster", name="Gremlin", confidence=.99)
     farmer.fight(1.)
     keys = [call.args[0] for call in controller.key.call_args_list]
-    assert keys[-1] == "ESC" and set(keys[:-1]) == {"R"}
+    assert keys[-2] == "ESC" and keys[-1] in "WASD" and set(keys[:-2]) == {"R"}
     assert not farmer.target_pending
     assert farmer.last_target is None
     assert farmer.training_kills == 0
@@ -57,7 +60,8 @@ def test_target_stops_taking_damage_and_is_cleared_after_stuck_timeout():
     farmer, controller, _, state = harness(stuck_timeout=1)
     state[2] = .8
     farmer.fight(1.)
-    assert controller.key.call_args_list[-1].args == ("ESC", 100)
+    assert controller.key.call_args_list[-2].args == ("ESC", 100)
+    assert controller.key.call_args_list[-1].args[0] in "WASD"
     assert farmer.training_kills == 0
 
 
@@ -73,7 +77,7 @@ def test_attack_repeats_every_one_and_half_seconds_without_extending_approach_ti
     controller.key.side_effect = key
     farmer.fight(1.)
     assert attacks == pytest.approx([0., 1.5, 3., 4.5])
-    assert controller.key.call_args_list[-1].args == ("ESC", 100)
+    assert controller.key.call_args_list[-2].args == ("ESC", 100)
     assert now[0] < 6
 
 

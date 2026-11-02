@@ -48,6 +48,7 @@ from hid_pilot.session import match_session_window
 from hid_pilot.support_life import SupportLifeObserver
 from hid_pilot.duo import parse_duo_settings
 from hid_pilot.transport import PicoTransport
+from hid_pilot.theme import apply_dark_theme
 
 logger = logging.getLogger("hid_pilot.gui")
 
@@ -122,6 +123,7 @@ class ScriptNotifications:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        apply_dark_theme(QApplication.instance())
         self.setWindowTitle("HID Pilot — текстовые сценарии / Pico")
         available = self.screen().availableGeometry()
         self.resize(min(1180, available.width()), min(1300, available.height() - 40))
@@ -230,6 +232,7 @@ class MainWindow(QMainWindow):
         script_layout.addLayout(auto_row)
         row = QHBoxLayout()
         self.start_button = QPushButton("START")
+        self.start_button.setProperty("appearance", "primary")
         self.start_button.clicked.connect(self.start)
         row.addWidget(self.start_button)
         self.record_video = QCheckBox("Вести запись")
@@ -241,9 +244,11 @@ class MainWindow(QMainWindow):
         self.debug_start_button.clicked.connect(lambda: self.start(debug=True))
         row.addWidget(self.debug_start_button)
         pause = QPushButton("PAUSE / RESUME")
+        pause.setProperty("appearance", "pause")
         pause.clicked.connect(self.toggle_pause)
         row.addWidget(pause)
         stop = QPushButton("STOP")
+        stop.setProperty("appearance", "danger")
         stop.clicked.connect(self.stop_from_button)
         row.addWidget(stop)
         layout.addLayout(row)
@@ -251,6 +256,7 @@ class MainWindow(QMainWindow):
         self.replay_status.setWordWrap(True)
         layout.addWidget(self.replay_status)
         self.status = QLabel("Готово" if self.hotkey.available else self.hotkey.error)
+        self.status.setProperty("appearance", "status")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.journal = QPlainTextEdit()

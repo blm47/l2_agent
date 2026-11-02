@@ -62,6 +62,16 @@ def test_summon_counts_as_party_and_does_not_need_a_selected_target():
     assert controller.events == [(1, "Q")]
 
 
+def test_mass_aggro_remains_available_while_ma_saves_mana(monkeypatch):
+    duo, controller, _ = observed_duo(
+        monkeypatch, .2, heal_key=None, support_self_heal_key=None,
+        mass_aggro_key="Q", buff1_key="F5")
+    duo.last_mp = .01
+    assert duo.saving_mana_for_buffs()
+    duo.observe()
+    assert (1, "Q") in controller.events
+
+
 @pytest.mark.parametrize("elapsed,loss,expected", [
     (.2, .029, False), (.2, .03, True), (.2, .04, True),
     (1., .15, True), (2., .3, False),

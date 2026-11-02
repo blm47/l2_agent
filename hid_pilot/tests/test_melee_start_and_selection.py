@@ -93,7 +93,7 @@ def test_chat_does_not_accept_known_player_or_npc(kind):
     controller.target_by_name.side_effect = select
     with pytest.raises(RuntimeError, match="/target"):
         farmer.acquire()
-    assert controller.target_by_name.call_count == 2
+    assert controller.target_by_name.call_count == 2 * (farmer.config.search_moves + 1)
 
 
 @pytest.mark.parametrize("target", [None, 0.])
@@ -103,7 +103,7 @@ def test_chat_keeps_searching_without_living_target_hp(target):
     farmer.known_mobs = {"Gremlin": 1, "Cloudy Beast": 22}
     with pytest.raises(RuntimeError, match="/target"):
         farmer.acquire()
-    assert controller.target_by_name.call_count == 2
+    assert controller.target_by_name.call_count == 2 * (farmer.config.search_moves + 1)
 
 
 @pytest.mark.parametrize("ocr_source", ["numbers", "party", "panel", "none"])

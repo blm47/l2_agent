@@ -116,6 +116,62 @@ def test_target_drop_log_explains_observed_hp_and_timeout():
     assert "последнее подтверждённое имя в этом бою: Giggling Wind" in drop
 
 
+@pytest.mark.parametrize("fast_farm", [False, True])
+@pytest.mark.parametrize("reason", ["approach", "stuck", "combat_limit"])
+def test_timeout_clears_target_then_cancels_running_for_exactly_three_hundred_ms(
+        monkeypatch, fast_farm, reason):
+    farmer, controller, now, state = harness(
+        approach_delay=2 if reason == "approach" else 5,
+        stuck_timeout=1, combat_timeout=1 if reason == "combat_limit" else 10,
+        experimental_fast_farm=fast_farm)
+    named(farmer)
+    farmer.target_pending = True
+    if reason == "stuck":
+        state[2] = .8
+    choose = Mock(return_value="S")
+    monkeypatch.setattr("hid_pilot.farm_melee.random.choice", choose)
+    pressed_at = []
+    key = controller.key.side_effect
+
+    def record(name, duration, **kwargs):
+        if name == "S":
+            assert farmer.last_target is None
+            assert not farmer.target_pending
+        pressed_at.append((name, now[0]))
+        key(name, duration, **kwargs)
+
+    controller.key.side_effect = record
+    farmer.fight(1.)
+    assert [call.args for call in controller.key.call_args_list[-2:]] == [("ESC", 100), ("S", 300)]
+    assert controller.key.call_args_list[-1].kwargs == {"exact": True}
+    choose.assert_called_once_with("WASD")
+    minimum = {"approach": 2., "stuck": 1., "combat_limit": 1.}[reason]
+    assert pressed_at[-2][1] >= minimum
+    assert not farmer.target_pending and farmer.last_target is None
+    assert farmer.training_kills == 0
+    assert farmer.config.loot not in [call.args[0] for call in controller.key.call_args_list]
+
+
+def test_duo_cancels_running_only_in_ma_window_after_target_drop(monkeypatch):
+    from test_duo import FARMER, make_duo
+
+    duo, controller = make_duo(approach_delay=.2, heal_key=None)
+    monkeypatch.setattr("hid_pilot.farm_melee.random.choice", lambda choices: "D")
+    presses = []
+    press = controller.key
+
+    def record(key, duration, **kwargs):
+        presses.append((controller.role, key, duration, kwargs))
+        press(key, duration, **kwargs)
+
+    controller.key = record
+    duo.fight(1.)
+    assert presses[-2][1] == "ESC"
+    assert presses[-1] == (FARMER, "D", 300, {"exact": True})
+    assert controller.role == FARMER
+    assert not duo.target_pending and duo.last_target is None
+
+
 def escape_harness(monkeypatch, direction="WA", steps=20):
     farmer, controller, now, _ = harness()
     monkeypatch.setattr("hid_pilot.farm_melee.random.choice", lambda choices: direction)

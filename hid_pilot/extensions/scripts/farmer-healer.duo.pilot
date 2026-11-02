@@ -1,6 +1,14 @@
+set search_movement false
+set buff4_rebuff_minutes 9.6
+set buff4_key "F9"
 # Дуо-фарм: МА + саппорт.
 # START запускается с вкладки «Дуо: МА + саппорт».
 # Пати-реген отключается строкой: set support_party_heal_key ""
+
+# Призыв пантеры МА: откат считается от начала каста; после появления полный ребафф.
+set summon_key "NUM6"
+set summon_cast_seconds 20
+set summon_cooldown 5
 
 # Сильные HP-эликсиры: по одному расходнику на персонажа, N2, откат 5 минут.
 set hp_elixir_key "NUM2"
@@ -10,7 +18,7 @@ set support_hp_elixir_key "NUM2"
 set support_hp_elixir_hp_threshold 0.35
 set support_hp_elixir_cooldown 300
 
-# УД МА: урон выше 5% HP/с или собственное HP ниже 7%; пустая кнопка отключает.
+# УД МА: урон выше 12% HP/с или собственное HP ниже 19%; пустая кнопка отключает.
 set ud_key "F6"
 set ud_cooldown 900
 set ud_damage_per_second 0.12
@@ -26,15 +34,12 @@ set fast_target_hp_threshold 0.05
 set target_max_hp_multiplier 9.0
 
 set humanize true
-set random_movement false
 set next_target "6"
 set attack "3"
-set melee "4"
 set loot "C"
 set heal "F1"
 set rest "="
 set pickup_loot false
-set target_threshold 0.1
 set hp_threshold 0.47
 set mp_threshold 0.1
 set mp_resume 0.9
@@ -43,18 +48,13 @@ set attack_delay 1.5
 set heal_delay 14.0
 set target_delay 0.7
 set approach_delay 5.0
-set loot_delay 0.7
 set loot_attempts 1
-set target_attempts 10
 set combat_timeout 90.0
-set stuck_timeout 8.0
-set reposition_delay 3.0
-set reposition_attempts 3
+set stuck_timeout 4.0
 set progress_epsilon 0.002
 set rest_timeout 180.0
 set observation_attempts 30
 set observation_delay 0.5
-set observation_movement true
 set heal_attempts 10
 set cycles 5000
 set max_hours 9.0
@@ -76,7 +76,7 @@ set buff2_cast_seconds 1.5
 set buff3_key "F10"
 set buff3_rebuff_minutes 9.7
 set buff3_cast_seconds 4.0
-set vampiric_key "F2"
+set vampiric_key "F3"
 set vampiric_hp_threshold 0.4
 set vampiric_cast_seconds 2.7
 set vampiric_cooldown 5.0
@@ -117,13 +117,20 @@ set support_vampiric_hp_threshold 0.7
 set support_vampiric_cast_seconds 1.3
 set support_vampiric_cooldown 1.5
 # F9 вешает пати-реген на 15 секунд; HP восстанавливается каждую секунду.
-# Удержание 300 мс; при низком HP разрешены до трёх повторов по откату.
+# Два нажатия с паузой 85 мс; при низком HP разрешены до трёх повторов по откату.
 set support_party_heal_key "F9"
 set support_party_heal_threshold 0.75
 set support_party_heal_cast_seconds 1.5
 set support_party_heal_cooldown 12.0
+# LifeImpact: макрос выбирает МА, лечит на 15% max HP и следует за МА.
+# ChantOfLife определяется по таймеру; после LifeImpact на МА считается снятым.
+set support_lifeimpact_key "9"
+set support_lifeimpact_cast_seconds 1.0
+set support_lifeimpact_cooldown 15.0
+set support_lifeimpact_hp_threshold 0.7
+set support_lifeimpact_emergency_hp 0.2
+set support_lifeimpact_regen_remaining 10.0
 set stop_attack_key "ESC"
-set defense_target_key "F8"
 set buff_seconds 10.0
 set rebuff_minutes 9.4
 set support_party_slot 1

@@ -3,6 +3,7 @@
 """
 
 import random
+import logging
 import time
 from collections import deque
 from collections.abc import Callable
@@ -16,6 +17,17 @@ from hid_pilot.farm import FarmConfig, Farmer
 from hid_pilot.farm import prepare_extension as prepare_farm
 from hid_pilot.script import KEYS
 from hid_pilot.numbers import parse_numbers
+
+logger = logging.getLogger("hid_pilot.farm")
+TARGET_VALIDATION_SECONDS = .5
+TARGET_VALIDATION_READS = 5
+
+# Параметры читаются для совместимости, но не управляют мили/дуо-фармом.
+INACTIVE_MELEE_SETTINGS = frozenset({
+    "random_movement", "melee", "target_threshold", "target_attempts",
+    "reposition_delay", "reposition_attempts", "observation_movement", "loot_delay",
+    "defense_target_key",
+})
 
 
 class MeleeConfig(FarmConfig):
@@ -35,6 +47,12 @@ class MeleeConfig(FarmConfig):
     buff3_key: str | None = None
     buff3_rebuff_minutes: float = Field(default=19, gt=0, le=1440)
     buff3_cast_seconds: float = Field(default=1, ge=.1, le=60)
+    buff4_key: str | None = None
+    buff4_rebuff_minutes: float = Field(default=19, gt=0, le=1440)
+    buff4_cast_seconds: float = Field(default=1, ge=.1, le=60)
+    buff5_key: str | None = None
+    buff5_rebuff_minutes: float = Field(default=19, gt=0, le=1440)
+    buff5_cast_seconds: float = Field(default=1, ge=.1, le=60)
     vampiric_key: str | None = None
     vampiric_hp_threshold: float = Field(default=.5, gt=0, le=1)
     vampiric_cast_seconds: float = Field(default=1, ge=.1, le=30)
@@ -48,6 +66,7 @@ class MeleeConfig(FarmConfig):
     quiet_seconds: float = Field(default=2.5, ge=1, le=10)
     loot_attempts: int = Field(default=1, ge=1, le=20)
     loot_hold: float = Field(default=.05, ge=.001, le=3)
+    search_movement: bool = True
     search_moves: int = Field(default=3, ge=1, le=3)
     search_cycles: int = Field(default=30, ge=1)
     hp_rest_threshold: float = Field(default=.30, gt=0, lt=1)
@@ -77,7 +96,7 @@ class MeleeConfig(FarmConfig):
             values.setdefault("loot_before_farm", previous)
         return values
 
-    @field_validator("buff1_key", "buff2_key", "buff3_key", "vampiric_key", "aggro_key")
+    @field_validator("buff1_key", "buff2_key", "buff3_key", "buff4_key", "buff5_key", "vampiric_key", "aggro_key")
     @classmethod
     def optional_skill_key(cls, value: str | None) -> str | None:
         if value is None or not value.strip():
@@ -185,7 +204,7 @@ class MeleeFarmer(Farmer):
         self.chat_status = "ожидание первого кадра"
         self.attacking = False
         self.buff_ready: dict[int, float] = {
-            slot: self.clock() + config.buff_delay_minutes * 60 for slot in range(1, 4)}
+            slot: self.clock() + config.buff_delay_minutes * 60 for slot in range(1, 6)}
         self.buff_configuration_logged = False
         self.buff_deferred: dict[int, str] = {}
         self.vampiric_ready = float("-inf")
@@ -204,6 +223,89 @@ class MeleeFarmer(Farmer):
         self.fast_target_ready = False
         self.verifying_target = False
         self.fast_progress_at: float | None = None
+        self.target_selected_at: float | None = None
+        self.target_selection_source = "наблюдение"
+        self.target_validation_token: tuple | None = None
+        self.target_validating = False
+        self.target_validation_logged = False
+        self.target_validation_reads = 0
+
+    def invalidate_target(self) -> None:
+        super().invalidate_target()
+        self.target_validation_token = None
+        self.target_selected_at = None
+        self.target_selection_source = "наблюдение"
+        self.target_validation_logged = False
+        self.target_validation_reads = 0
+
+    def begin_target_selection(self, source: str) -> None:
+        self.target_selected_at = time.perf_counter()
+        self.target_selection_source = source
+        self.target_validation_token = None
+        self.target_validation_logged = False
+        self.target_validation_reads = 0
+
+    def log_target_validation(self, result: str, reads: int | None = None) -> None:
+        if self.target_validation_logged:
+            return
+        if reads is None:
+            reads = self.target_validation_reads
+        elapsed = (max(0., time.perf_counter() - self.target_selected_at) * 1000
+                   if self.target_selected_at is not None else None)
+        elapsed_text = f"{elapsed:.1f}" if elapsed is not None else "неизвестно"
+        logger.info("Валидация цели перед атакой: результат=%s; выбор_до_валидации_мс=%s; "
+                    "источник=%s; повторных_чтений=%s; %s", result, elapsed_text,
+                    self.target_selection_source, reads, self.target_description(),
+                    extra={"target_validation_result": result, "target_selection_ms": elapsed,
+                           "target_validation_reads": reads})
+        self.target_validation_logged = True
+
+    def validate_target_before_attack(self) -> bool:
+        """
+        Не допускает первую атаку по полосе без числовых максимумов HP новой цели.
+        """
+        if self.target_validating:
+            return False
+        # Источники без CV-профиля сохраняют собственный контракт наблюдений.
+        if not isinstance(self.profile, BarProfile):
+            return not self.reject_unsafe_target()
+        generation = self.controller.pause_generation
+        token = (generation, getattr(self.last_target, "epoch", None), self.monster_identity())
+        if self.target_validation_token == token:
+            return not self.reject_unsafe_target()
+        self.target_validating = True
+        started = time.perf_counter()
+        try:
+            for reads in range(TARGET_VALIDATION_READS + 1):
+                self.target_validation_reads = reads
+                if generation != self.controller.pause_generation:
+                    self.log_target_validation("отмена после паузы", reads)
+                    return False
+                if self.reject_unsafe_target():
+                    return False
+                if self.target_hp_maxima() is not None:
+                    if (self.last_target is None or not self.alive_target(self.last_target.hp)
+                            or self.reject_high_level_target()):
+                        self.log_target_validation("цель не подтверждена", reads)
+                        return False
+                    self.target_validation_token = (
+                        generation, self.last_target.epoch, self.monster_identity())
+                    self.log_target_validation("разрешена", reads)
+                    return True
+                if (reads == TARGET_VALIDATION_READS
+                        or time.perf_counter() - started >= TARGET_VALIDATION_SECONDS):
+                    break
+                # Читаем новый кадр без target_delay; повторный ввод при этом запрещён.
+                self.controller.wait(.01)
+                MeleeFarmer.observe(self)
+            self.log_target_validation("пропуск: максимум HP неизвестен", reads)
+            self.controller.key("ESC", 80)
+            self.attacking = self.fast_target_ready = self.target_pending = False
+            self.invalidate_target()
+            self.unsafe_target_rejected = True
+            return False
+        finally:
+            self.target_validating = False
 
     def sync_kill_watch(self) -> None:
         """
@@ -250,7 +352,7 @@ class MeleeFarmer(Farmer):
 
     def buffs_due(self) -> bool:
         return any(getattr(self.config, f"buff{slot}_key") is not None
-                   and self.clock() >= self.buff_ready[slot] for slot in range(1, 4))
+                   and self.clock() >= self.buff_ready[slot] for slot in range(1, 6))
 
     def saving_mana_for_buffs(self) -> bool:
         """
@@ -261,7 +363,7 @@ class MeleeFarmer(Farmer):
             self.buff_mana_waiting = False
         elif self.last_mp is None or self.last_mp < self.config.buff_min_mp:
             if not self.buff_mana_waiting:
-                self.report("Ребафф МА ожидает ману: используем только обычную атаку")
+                self.report("Ребафф МА ожидает ману: обычная атака и спасательный агр; остальные скиллы запрещены до ребаффа")
             self.buff_mana_waiting = True
         return self.buff_mana_waiting
 
@@ -278,13 +380,13 @@ class MeleeFarmer(Farmer):
     def cast_buffs(self) -> None:
         if not self.buff_configuration_logged:
             enabled = [f"{slot}: {getattr(self.config, f'buff{slot}_key')}"
-                       for slot in range(1, 4) if getattr(self.config, f"buff{slot}_key") is not None]
+                       for slot in range(1, 6) if getattr(self.config, f"buff{slot}_key") is not None]
             if enabled:
                 self.report(f"Селф/пати-баффы МА настроены: {', '.join(enabled)}")
             else:
-                self.report("Селф/пати-баффы МА отключены: buff1_key, buff2_key и buff3_key пусты")
+                self.report("Селф/пати-баффы МА отключены: buff1_key, buff2_key, buff3_key, buff4_key и buff5_key пусты")
             self.buff_configuration_logged = True
-        for slot in range(1, 4):
+        for slot in range(1, 6):
             key = getattr(self.config, f"buff{slot}_key")
             if key is None or self.clock() < self.buff_ready.get(slot, float("-inf")):
                 continue
@@ -323,6 +425,9 @@ class MeleeFarmer(Farmer):
                 self.report(f"Бафф МА {slot} прерван уроном; повторим после боя")
                 return
             self.buff_ready[slot] = started + getattr(self.config, f"buff{slot}_rebuff_minutes") * 60
+            if self.attacking:
+                # Между баффами возвращаемся в боевой цикл и возобновляем атаку.
+                return
             # Следующий бафф разрешается только после нового наблюдения.
 
     def wait_for_buff(self, seconds: float) -> bool:
@@ -338,7 +443,8 @@ class MeleeFarmer(Farmer):
     def open_with_aggro(self) -> None:
         if self.reject_unsafe_target():
             return
-        if self.config.aggro_key is not None and not self.attacking and not self.saving_mana_for_buffs():
+        if (self.config.aggro_key is not None and not self.attacking
+                and (not self.saving_mana_for_buffs() or self.under_attack)):
             self.report(f"Агр МА перед атакой: {self.config.aggro_key}")
             self.combat_key(self.config.aggro_key, 100)
 
@@ -357,6 +463,12 @@ class MeleeFarmer(Farmer):
         self.controller.wait(seconds)
 
     def combat_key(self, key: str, duration: int) -> bool:
+        if (not self.casting_ma_buff and self.saving_mana_for_buffs()
+                and key != self.config.attack
+                and (key in {*self.config.damage_keys, *self.config.overhit_keys, self.config.vampiric_key,
+                             getattr(self.config, "ud_key", None)}
+                     or (key == self.config.aggro_key and not self.under_attack))):
+            return False
         offensive = {self.config.attack, self.config.aggro_key, self.config.vampiric_key,
                      *self.config.damage_keys, *self.config.overhit_keys}
         if (key in offensive and not self.casting_ma_buff and self.last_target is not None
@@ -371,6 +483,8 @@ class MeleeFarmer(Farmer):
             self.report(f"Живое HP цели не подтверждено: кнопка {key}, агр, атака и скиллы "
                         f"заблокированы; {self.target_description()}")
             return False
+        if key in offensive and not self.casting_ma_buff and not self.validate_target_before_attack():
+            return False
         if key in {self.config.attack, *self.config.damage_keys, *self.config.overhit_keys}:
             self.attacking = True
         sent_at = time.monotonic()
@@ -383,6 +497,8 @@ class MeleeFarmer(Farmer):
         return True
 
     def press(self, key: str) -> None:
+        if key == self.config.next_target:
+            self.begin_target_selection("next_target")
         if key in {self.config.attack, self.config.heal, *self.config.damage_keys, *self.config.overhit_keys}:
             self.combat_key(key, 100)
         else:
@@ -457,6 +573,7 @@ class MeleeFarmer(Farmer):
         Сбрасывает игрока/NPC без атак и удерживает запрет до новой живой цели.
         """
         if self.is_unsafe_target():
+            self.log_target_validation("запрещена")
             maxima = self.target_hp_maxima()
             if (maxima is not None
                     and maxima[1] >= self.config.target_max_hp_multiplier * maxima[0]):
@@ -706,7 +823,8 @@ class MeleeFarmer(Farmer):
             target = self.search_cycle()
             if target is not None:
                 return target
-        raise RuntimeError("Next target и /target не нашли мобов после всех циклов поиска; фарм остановлен")
+        raise RuntimeError("Next target и /target не нашли подходящую живую цель после всех циклов поиска; "
+                           "проверьте ограничения HP/уровня и известные имена мобов; фарм остановлен")
 
     def own_level(self) -> int | None:
         return self.display_data[0].get("level") if self.display_data is not None else None
@@ -737,6 +855,10 @@ class MeleeFarmer(Farmer):
             self.controller.wait(self.config.target_delay)
             _, _, target = self.observe()
             if self.reject_unsafe_target():
+                self.report("Next target отклонён проверкой безопасности: пробуем /target по известным именам")
+                target = self.search_known_target()
+                if target is not None:
+                    return target
                 continue
             if self.reject_high_level_target():
                 return self.search_known_target()
@@ -757,7 +879,7 @@ class MeleeFarmer(Farmer):
                 self.controller.wait(.2)
                 continue
             self.on_target_missing()
-            if attempt < self.config.search_moves:
+            if self.config.search_movement and attempt < self.config.search_moves:
                 self.report(f"Нет цели: поиск WASD {attempt + 1}/{self.config.search_moves}")
                 self.controller.key(random.choice("WASD"), random.randint(2000, 3000))
         return None
@@ -785,6 +907,7 @@ class MeleeFarmer(Farmer):
             name = self.target_name_pool.pop()
             self.before_target_selection()
             self.invalidate_target()
+            self.begin_target_selection("/target")
             self.controller.target_by_name(name)
             self.controller.wait(self.config.target_delay)
             _, _, target = self.observe()
@@ -868,6 +991,9 @@ class MeleeFarmer(Farmer):
                 target = self.escape_target
         finally:
             self.attacking = self.fast_target_ready
+
+    def allow_fast_target_switch(self) -> bool:
+        return self.config.experimental_fast_farm
 
     def switch_fast_target(self) -> None:
         """
@@ -955,7 +1081,7 @@ class MeleeFarmer(Farmer):
             if self.reject_high_level_target():
                 self.escape_target = self.search_known_target()
                 return
-            if (self.config.experimental_fast_farm
+            if (self.allow_fast_target_switch()
                     and (target is None or target < self.config.fast_target_hp_threshold
                          or self.last_target is not None and self.last_target.death_marker)):
                 if (target is not None and
@@ -1037,7 +1163,7 @@ class MeleeFarmer(Farmer):
                 if self.config.pickup_loot:
                     self.pickup_loot()
                 return
-            if self.service_combat_buffs(hp):
+            if not resume_attack and self.service_combat_buffs(hp):
                 measuring = False
                 previous_at = float("-inf")
                 progress_at = started = self.clock()
@@ -1115,6 +1241,8 @@ class MeleeFarmer(Farmer):
                     self.report("Имя недоступной цели не распознано в этом бою: "
                                 "счётчик прежних неудачных выборов сохранён без увеличения")
                 self.invalidate_target()
+                # ESC может оставить бег к прежней цели: короткое движение отменяет его.
+                self.cancel_target_run()
                 if self.unreachable_selections >= 5:
                     self.escape_target = self.escape_from_unreachable(self.unreachable_name)
                 return
@@ -1129,6 +1257,11 @@ class MeleeFarmer(Farmer):
                     return
                 next_attack = self.clock() + self.config.attack_delay
                 self.press(self.config.attack)
+
+    def cancel_target_run(self) -> None:
+        direction = random.choice("WASD")
+        self.report(f"Отменяем бег к сброшенной цели: {direction}, удержание 300 мс")
+        self.controller.key(direction, 300, exact=True)
 
     def pickup_loot(self) -> None:
         duration = round(self.config.loot_hold * 1000)

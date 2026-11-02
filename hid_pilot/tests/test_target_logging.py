@@ -34,6 +34,7 @@ def test_target_changes_and_hp_availability_are_logged_without_per_frame_spam(ca
 def test_offensive_decisions_log_target_and_actual_key(caplog, kind, hp, expected):
     farmer, controller, _, _ = harness(attack="3", next_target="6")
     farmer.profile = BarProfile(width=100, height=100)
+    farmer.observation_details = {"hp": "OCR 1000/1000", "target_hp": "OCR 800/1000"}
     farmer.last_target = TargetObservation(at=0, name="Graundfu" if kind == "player" else "Gremlin",
                                            kind=kind, hp=hp,
                                            player_class="Plains Walker" if kind == "player" else None)

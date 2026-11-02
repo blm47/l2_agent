@@ -48,6 +48,7 @@ class NumbersReader:
     def __init__(self) -> None:
         self.engine: Any = None
         self.lock = threading.RLock()
+        self.diagnostics = threading.local()
         self.cache: OrderedDict[tuple, tuple[float, ResourceNumbers]] = OrderedDict()
         self.level_cache: OrderedDict[tuple, int] = OrderedDict()
 
@@ -84,12 +85,15 @@ class NumbersReader:
                 logger.info("Чтение цифр: OCR на CPU загружен")
 
     def read(self, bgr: np.ndarray) -> ResourceNumbers | None:
+        self.diagnostics.reason = ""
         if bgr.size == 0 or bgr.shape[0] < 3 or bgr.shape[1] < 8:
+            self.diagnostics.reason = f"слишком маленький ROI: {bgr.shape}"
             return None
         self.prepare()
         low, high = np.min(bgr, axis=2), np.max(bgr, axis=2)
         foreground = (low >= 125) & (high.astype(int) - low.astype(int) <= 65)
         if np.count_nonzero(foreground) < 4:
+            self.diagnostics.reason = "в ROI меньше 4 светлых пикселей цифр"
             return None
         mask = cv2.cvtColor(np.where(foreground, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
         signature = (foreground.shape, foreground.tobytes())
@@ -102,6 +106,7 @@ class NumbersReader:
             complete = [band for band in bands
                         if len(band) >= 3 and band[0] > 0 and band[-1] < bgr.shape[0] - 1]
             if not complete or len(complete) > 3:
+                self.diagnostics.reason = f"неоднозначные строки ROI: полос {len(bands)}, полных {len(complete)}"
                 return None
             variants = []
             for band in complete:
@@ -119,21 +124,45 @@ class NumbersReader:
                                        cv2.BORDER_CONSTANT, value=(0, 0, 0)),
                 ))
         readings = []
+        attempts = []
         with self.lock:
             cached = self.cache.get(signature)
             if cached is not None and cached[1].current > 0 and 0 <= time.monotonic() - cached[0] <= 2:
                 self.cache.move_to_end(signature)
                 return cached[1]
-            for row in variants:
-                for crop in row:
-                    resized = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-                    result, _ = self.engine(resized, use_det=False, use_cls=False)
-                    if result is not None and len(result) == 1:
-                        text, score = result[0]
-                        parsed = parse_numbers(str(text), float(score))
-                        if parsed is not None:
-                            readings.append(parsed)
+            for tight in (False, True):
+                # Повторяем только неудачное чтение: конфликт чисел не исправляем обрезкой.
+                if tight and readings:
+                    break
+                for row in variants:
+                    crops = row
+                    if tight:
+                        row_low, row_high = np.min(row[1], axis=2), np.max(row[1], axis=2)
+                        ys, xs = np.nonzero((row_low >= 125)
+                                            & (row_high.astype(int) - row_low.astype(int) <= 65))
+                        if len(xs) < 4:
+                            continue
+                        # Сохраняем обводку и добавляем поля: широкий фон искажает символ /.
+                        top, bottom = max(0, int(ys.min()) - 1), int(ys.max()) + 2
+                        left, right = max(0, int(xs.min()) - 1), int(xs.max()) + 2
+                        crops = tuple(cv2.copyMakeBorder(
+                            crop[top:bottom, left:right], 2, 2, 2, 2,
+                            cv2.BORDER_CONSTANT, value=color)
+                            for crop, color in zip(row, ((255, 255, 255), (0, 0, 0))))
+                    for crop in crops:
+                        resized = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+                        result, _ = self.engine(resized, use_det=False, use_cls=False)
+                        if result is not None and len(result) == 1:
+                            text, score = result[0]
+                            parsed = parse_numbers(str(text), float(score))
+                            attempts.append(f"текст={str(text)!r}, confidence={float(score):.4f}, допустим={parsed is not None}")
+                            if parsed is not None:
+                                readings.append(parsed)
+                        else:
+                            attempts.append(f"OCR не вернул одну строку: {result!r}")
         if not readings or len({(r.current, r.maximum) for r in readings}) != 1:
+            reason = "нет допустимых чисел (нужны current/maximum, confidence >=0.85, 0<=current<=maximum)" if not readings else "конфликт чисел между вариантами обработки"
+            self.diagnostics.reason = reason + "; " + "; ".join(attempts)
             return None
         result = max(readings, key=lambda reading: reading.confidence)
         # Смерть должна подтверждаться новым OCR, а не повтором закешированного нуля.

@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pytest
 
@@ -51,6 +54,24 @@ def test_unreadable_red_fragments_do_not_become_zero_hp():
     image, _ = summon_scene(0., .5)
     image[120:128, 150:155] = (60, 55, 155)
     assert read_summon(image, summon_profile()) == {"summon_hp": None, "summon_mp": .5}
+
+
+def test_real_living_panther_is_recognized_with_changed_background_at_icon_edges():
+    fixtures = Path(__file__).parent / "fixtures"
+    image = cv2.imread(str(fixtures / "panther-panel-background.png"))
+    profile = BarProfile.model_validate_json(
+        (fixtures / "panther-panel-background.json").read_text(encoding="utf-8"))
+    icon = cv2.resize(cv2.cvtColor(profile.crop(image, profile.summon.icon), cv2.COLOR_BGR2GRAY),
+                      (32, 32), interpolation=cv2.INTER_AREA)
+    expected = np.asarray(profile.summon.icon_pixels, dtype=np.uint8)
+    assert float(cv2.matchTemplate(icon, expected, cv2.TM_CCOEFF_NORMED)[0, 0]) < .92
+    assert read_summon(image, profile) == {"summon_hp": 1., "summon_mp": 1.}
+
+
+def test_matching_icon_border_with_wrong_center_does_not_confirm_panel():
+    image, _ = summon_scene()
+    image[114:138, 14:38] = 20
+    assert read_summon(image, summon_profile()) == {"summon_hp": None, "summon_mp": None}
 
 
 def test_summon_profile_roundtrips_and_old_profiles_do_not_enable_it():

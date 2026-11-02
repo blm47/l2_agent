@@ -157,6 +157,7 @@ def test_missing_or_zero_hp_blocks_offensive_input_with_real_cv_profile(hp):
         assert not farmer.combat_key(key, 100)
     controller.key.assert_not_called()
     farmer.last_target = TargetObservation(at=1, hp=.8)
+    farmer.observation_details = {"hp": "OCR 1000/1000", "target_hp": "OCR 800/1000"}
     assert farmer.combat_key(farmer.config.attack, 100)
     controller.key.assert_called_once_with(farmer.config.attack, 100)
 

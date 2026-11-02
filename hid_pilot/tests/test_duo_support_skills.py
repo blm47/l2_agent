@@ -71,10 +71,10 @@ def test_support_vampiric_assists_then_casts_and_returns(monkeypatch):
     )
     duo.observe()
     assert controller.events == [
-        ("window", 2), (2, duo.config.support_key), (2, "F6"), ("window", 1)]
-    assert controller.now == pytest.approx(.15 + duo.config.support_seconds + 2)
+        ("window", 2), (2, duo.config.support_key), (2, "F6"), (2, "F6"), ("window", 1)]
+    assert controller.now == pytest.approx(.15 + duo.config.support_seconds + .085 + 2)
     duo.observe()
-    assert controller.events.count((2, "F6")) == 1
+    assert controller.events.count((2, "F6")) == 2
 
 
 @pytest.mark.parametrize("support_hp,target", [(None, .9), (.6, .9), (.4, 0), (.4, None), (0, .9)])
@@ -127,15 +127,15 @@ def test_support_vampiric_uses_own_cooldown_despite_recent_heal(monkeypatch, hea
     controller.capture = lambda: (1., .4, False)
     duo.mark_support_heal(heal_key)
     duo.observe()
-    assert controller.events.count((2, "F6")) == 1
+    assert controller.events.count((2, "F6")) == 2
     ready = duo.support_vampiric_ready
     controller.now = ready - .01
     duo.observe()
-    assert controller.events.count((2, "F6")) == 1
+    assert controller.events.count((2, "F6")) == 2
     duo.mark_support_heal(heal_key)
     controller.now = ready
     duo.observe()
-    assert controller.events.count((2, "F6")) == 2
+    assert controller.events.count((2, "F6")) == 4
 
 
 @pytest.mark.parametrize("farmer_hp,support_hp", [(.4, .9), (.9, .4)])
@@ -149,4 +149,4 @@ def test_party_heal_has_separate_key_and_cooldown(monkeypatch, farmer_hp, suppor
     assert (2, "F7") in controller.events
     assert (2, "F4") not in controller.events
     duo.observe()
-    assert controller.events.count((2, "F7")) == 1
+    assert controller.events.count((2, "F7")) == 2
