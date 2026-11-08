@@ -166,7 +166,7 @@ def test_acquire_and_retaliation_use_real_observation_and_only_six_next_targets(
     def key(name, duration, **kwargs):
         nonlocal selected
         original_key(name, duration, **kwargs)
-        if name == duo.config.next_target:
+        if name in {duo.config.next_target_near, duo.config.next_target}:
             selected = True
         elif name == "ESC":
             selected = False
@@ -191,7 +191,7 @@ def test_acquire_and_retaliation_use_real_observation_and_only_six_next_targets(
     controller.wait(.2)
     assert duo.acquire() == .9
     keys = [key for role, key in controller.events if role == 1]
-    assert keys.count(duo.config.next_target) == 6
+    assert sum(key in {duo.config.next_target_near, duo.config.next_target} for key in keys) == 6
     assert keys.count("ESC") == 5
     assert keys[-2:] == ["2", duo.config.attack]
 

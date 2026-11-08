@@ -1,10 +1,10 @@
 from unittest.mock import Mock
 
 import pytest
+from test_duo import FARMER, SUPPORT, switch_controller
 
 from hid_pilot.controller import Stopped
 from hid_pilot.desktop import ActivationDenied, FocusLost
-from test_duo import FARMER, SUPPORT, switch_controller
 
 
 def test_repeated_visits_skip_failed_direct_and_foreground_methods(monkeypatch):
@@ -220,3 +220,81 @@ def test_stop_during_alt_tab_still_releases_without_arm(monkeypatch):
     transport.release.assert_called()
     transport.arm.assert_not_called()
     transport.hold.assert_not_called()
+
+
+@pytest.mark.parametrize("late_on", ["foreground", "attached_focus"])
+def test_helper_timeout_after_actual_focus_does_not_switch_back(monkeypatch, late_on):
+    controller, destination, transport = switch_controller(monkeypatch)
+    source = controller.desktop
+    active = [FARMER.hwnd]
+    monkeypatch.setattr("hid_pilot.controller.win32gui.GetForegroundWindow", lambda: active[0])
+    def check_source():
+        if active[0] != FARMER.hwnd:
+            raise FocusLost("Уже саппорт")
+
+    source.check.side_effect = check_source
+    monkeypatch.setattr("hid_pilot.controller.activate", Mock(side_effect=ActivationDenied("Отказ")))
+    monkeypatch.setattr("hid_pilot.controller.win32api.GetAsyncKeyState", lambda key: 0)
+    calls = []
+
+    def helper(*args, strategy="foreground"):
+        calls.append(strategy)
+        if strategy == late_on:
+            active[0] = SUPPORT.hwnd
+        raise RuntimeError("Helper timeout после смены фокуса")
+
+    monkeypatch.setattr("hid_pilot.controller.request_activation", helper)
+    controller.switch_window(SUPPORT)
+    assert controller.desktop is destination
+    assert calls == (["foreground"] if late_on == "foreground" else ["foreground", "attached_focus"])
+    transport.window_switch.assert_not_called()
+    transport.reset_session.assert_not_called()
+    transport.arm.assert_called_once()
+
+
+@pytest.mark.parametrize("unsafe", ["stop", "pause", "geometry", "other_window"])
+def test_late_focus_never_bypasses_input_guards(monkeypatch, unsafe):
+    controller, destination, transport = switch_controller(monkeypatch)
+    active = [FARMER.hwnd]
+    monkeypatch.setattr("hid_pilot.controller.win32gui.GetForegroundWindow", lambda: active[0])
+    monkeypatch.setattr("hid_pilot.controller.activate", Mock(side_effect=ActivationDenied("Отказ")))
+
+    def failed(*args):
+        active[0] = SUPPORT.hwnd
+        if unsafe == "stop":
+            controller.stopped.set()
+        elif unsafe == "pause":
+            controller.manual_paused.set()
+        elif unsafe == "geometry":
+            destination.check.side_effect = RuntimeError("Геометрия изменилась")
+        else:
+            active[0] = 999
+            controller.desktop.check.side_effect = FocusLost("Уход пользователя")
+        raise RuntimeError("Helper timeout")
+
+    monkeypatch.setattr("hid_pilot.controller.request_activation", failed)
+    with pytest.raises((RuntimeError, Stopped)):
+        controller.switch_window(SUPPORT)
+    transport.arm.assert_not_called()
+    transport.window_switch.assert_not_called()
+    assert controller.stopped.is_set()
+
+
+def test_activation_error_after_actual_switch_does_not_start_helper(monkeypatch):
+    controller, destination, transport = switch_controller(monkeypatch)
+    active = [FARMER.hwnd]
+    monkeypatch.setattr("hid_pilot.controller.win32gui.GetForegroundWindow", lambda: active[0])
+
+    def late_error(target):
+        active[0] = SUPPORT.hwnd
+        controller.desktop.check.side_effect = FocusLost("Уже саппорт")
+        raise ActivationDenied("Поздний результат")
+
+    monkeypatch.setattr("hid_pilot.controller.activate", late_error)
+    helper = Mock()
+    monkeypatch.setattr("hid_pilot.controller.request_activation", helper)
+    controller.switch_window(SUPPORT)
+    assert controller.desktop is destination
+    helper.assert_not_called()
+    transport.window_switch.assert_not_called()
+    transport.arm.assert_called_once()

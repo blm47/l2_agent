@@ -35,6 +35,7 @@ set target_max_hp_multiplier 9.0
 
 set humanize true
 set next_target "6"
+set next_target_near "7"
 set attack "3"
 set loot "C"
 set heal "F1"
@@ -46,11 +47,11 @@ set mp_resume 0.9
 set attack_delay 1.5
 # Зелье даёт усиленный HP-реген на 15 секунд; остальные хилы и УД доступны.
 set heal_delay 14.0
-set target_delay 0.7
+set target_delay 0.1
 set approach_delay 5.0
 set loot_attempts 1
 set combat_timeout 90.0
-set stuck_timeout 4.0
+set stuck_timeout 3.0
 set progress_epsilon 0.002
 set rest_timeout 180.0
 set observation_attempts 30

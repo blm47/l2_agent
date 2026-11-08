@@ -47,7 +47,7 @@ def test_approach_wait_starts_after_attack_and_switches_target():
 def test_unreachable_target_is_cleared_before_next_selection_without_loot():
     farmer, controller, _, _ = harness()
     farmer.target_pending = True
-    farmer.last_target = TargetObservation(at=0, kind="monster", name="Gremlin", confidence=.99)
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind="monster", name="Gremlin", confidence=.99)
     farmer.fight(1.)
     keys = [call.args[0] for call in controller.key.call_args_list]
     assert keys[-2] == "ESC" and keys[-1] in "WASD" and set(keys[:-2]) == {"R"}
@@ -137,7 +137,8 @@ def test_next_target_tries_names_before_each_of_three_moves_and_exhaustion():
     with pytest.raises(RuntimeError, match="/target"):
         farmer.acquire()
     keys = [call.args for call in controller.key.call_args_list]
-    assert sum(key == "3" for key, _ in keys) == 4
+    assert sum(key == farmer.config.next_target for key, _ in keys) == 12
+    assert sum(key == farmer.config.next_target_near for key, _ in keys) == 12
     movements = [(key, ms) for key, ms in keys if key in "WASD"]
     assert len(movements) == 3
     assert all(2000 <= ms <= 3000 for _, ms in movements)
@@ -152,7 +153,7 @@ def test_chat_selection_requires_matching_monster():
 
     def select(name):
         state[2] = 1.
-        farmer.last_target = TargetObservation(at=0, kind="monster", name=name, confidence=.95)
+        farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind="monster", name=name, confidence=.95)
 
     controller.target_by_name.side_effect = select
     assert farmer.acquire() == 1.
@@ -214,8 +215,8 @@ def test_rest_kills_aggro_before_sitting():
 def test_monster_database_persists_observed_levels(tmp_path):
     stats = MobStatistics(0.)
     stats.database = tmp_path / "monsters.sqlite3"
-    stats.remember(TargetObservation(at=0, kind="monster", name="Cloudy Beast", level=22, confidence=.95))
-    stats.remember(TargetObservation(at=1, kind="monster", name="Cloudy Beast", confidence=.95))
+    stats.remember(TargetObservation(hp_bar_present=True, at=0, kind="monster", name="Cloudy Beast", level=22, confidence=.95))
+    stats.remember(TargetObservation(hp_bar_present=True, at=1, kind="monster", name="Cloudy Beast", confidence=.95))
     assert stats.known_names() == {"Cloudy Beast": 22}
 
 

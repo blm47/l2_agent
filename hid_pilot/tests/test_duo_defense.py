@@ -159,7 +159,7 @@ def test_defense_keeps_high_level_filter_and_returns_unknown_after_esc():
     farmer, controller = make_duo(heal_key=None)
     farmer.last_resources = (.8, None)
     farmer.display_data = ({"level": 20}, {}, [])
-    farmer.last_target = TargetObservation(at=0, kind="monster", name="Strong Mob", level=30, confidence=.99)
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind="monster", name="Strong Mob", level=30, confidence=.99)
     controller.capture = lambda: (.5, .9, False)
     assert farmer.observe()[2] is None
     assert controller.events == [(1, "ESC")]
@@ -171,7 +171,7 @@ def test_search_does_not_run_wasd_while_under_attack():
     state[:] = [.5, 1., None]
     with pytest.raises(RuntimeError, match="не нашли подходящую живую цель"):
         farmer.acquire()
-    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target] * 3
+    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target_near, farmer.config.next_target] * 9
 
 
 def test_unreachable_target_is_dropped_quickly_when_taking_damage():

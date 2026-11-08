@@ -152,7 +152,7 @@ def test_fast_switch_does_not_attack_boss_after_initial_bar_only_reading(monkeyp
     monkeypatch.setattr(MeleeFarmer, "observe", observe)
     farmer.switch_fast_target()
     assert not farmer.fast_target_ready
-    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target, "ESC"]
+    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target_near, "ESC"]
 
 
 def test_support_vampiric_assist_is_blocked_until_target_validated(monkeypatch):
@@ -180,5 +180,5 @@ def test_named_selection_timing_includes_target_command_and_existing_wait(monkey
     with caplog.at_level(logging.INFO, logger="hid_pilot.farm"):
         assert farmer.combat_key(farmer.config.attack, 100)
     record = next(record for record in caplog.records if hasattr(record, "target_selection_ms"))
-    assert record.target_selection_ms == pytest.approx(900)
+    assert record.target_selection_ms == pytest.approx(450)
     assert "источник=/target" in record.getMessage()

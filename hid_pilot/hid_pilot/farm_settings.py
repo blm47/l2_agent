@@ -18,6 +18,14 @@ from hid_pilot.script import script_variables
 
 
 SETTING_DESCRIPTIONS = {
+    "predict_target_death": "Прогнозировать смерть по снижению HP текущего моба за 0.5–1 с. Если осталось не более 0.5 с — ждать 0.5 с, отправить скилл на труп и выбирать следующую цель без подтверждения смерти. Убийство считается неподтверждённым.",
+    "offparty_support": "Офф-пати саппорт: только два последовательных бафф-макроса или хил. МА приглашает в пати и после таймеров сам исключает саппорта. Ассист, следование и автопризыв отключены.",
+    "offparty_invite_key": "Кнопка приглашения в пати в окне МА; по умолчанию F7.",
+    "offparty_invite_seconds": "Пауза после приглашения, перед переключением на саппорта, секунды.",
+    "offparty_kick_key": "Кнопка исключения саппорта из пати в окне МА; по умолчанию F8.",
+    "corpse_key": "Кнопка скилла на труп моба; пусто — отключён. После смерти или ожидания по прогнозу, до лута. Одно нажатие без дополнительного кадра и ожидания каста.",
+    "corpse_cast_seconds": "Устаревшая настройка: скилл на труп отправляется без ожидания каста.",
+    "corpse_cooldown": "Откат скилла на труп от отправки, секунды.",
     "support_mass_buff_enabled": "Если ребафф подошёл в бою, давать баффы по одному вместо полного макроса. Каждую кнопку нажимать дважды с интервалом 85 мс за один визит, затем возвращаться к фарму. Вне боя сохраняется полный макрос.",
     "support_mass_buff_cast_seconds": "Время каста одного баффа саппорта, секунды. МА продолжает фарм в своём окне; следующий бафф и обычный ассист ждут окончания каста.",
     "support_mass_buff_min_mp": "MP саппорта на один пати-бафф (по умолчанию 0.09 = 9%). После призыва при нехватке MP на полный ребафф действует с первой кнопки, фарм продолжается. Для обычного начала серии действует support_buff_min_mp. Таймер rebuff_minutes запускается после последней кнопки.",
@@ -55,6 +63,7 @@ SETTING_DESCRIPTIONS = {
     "mass_aggro_damage_per_second": "Масс-агр при падении HP сопартийца от этой доли максимального HP в секунду; 0.15 = 15%/с.",
     "humanize": "Небольшие случайные вариации обычных нажатий.",
     "random_movement": "Случайные перемещения базового сценария.",
+    "next_target_near": "Next target: ближняя цель, радиус 400 (7), первым.",
     "next_target": "Кнопка выбора следующей цели.",
     "attack": "Кнопка основной атаки МА.",
     "melee": "Кнопка ближней атаки базового сценария.",
@@ -70,7 +79,7 @@ SETTING_DESCRIPTIONS = {
     "mp_resume": "Завершать восстановление MP при достижении этой доли.",
     "attack_delay": "Интервал повторов основной атаки, секунды.",
     "heal_delay": "Интервал между зельями МА по длительности их эффекта, секунды. В мили/дуо другие хилы, УД и бой продолжаются.",
-    "target_delay": "Ожидание обновления цели после выбора, секунды.",
+    "target_delay": "Ожидание обновления цели после выбора: 0–1 секунды, по умолчанию 0,25. Применяется также в быстром фарме; 0 отключает задержку.",
     "approach_delay": "Время сближения без урона по цели, секунды.",
     "loot_delay": "Старый параметр: в мили/дуо дополнительную паузу не создаёт.",
     "loot_attempts": "Сколько раз нажимать кнопку подбора; по умолчанию 1.",
@@ -139,7 +148,7 @@ SETTING_DESCRIPTIONS = {
     "damage_memory_seconds": "Как долго учитывать недавний входящий урон при баффе, секунды.",
     "support_seconds": "Ожидание макроса ассиста/следования во втором окне, секунды.",
     "heal_seconds": "Ожидание целевого хила саппорта, секунды.",
-    "heal_threshold": "Лечить МА саппортом при HP ниже этой доли.",
+    "heal_threshold": "Лечить МА саппортом при HP ниже этой доли. В офф-пати режиме это единый порог для МА и всех участников пати: 0.6 = 60%.",
     "heal_cooldown": "Общая пауза между лечебными кастами саппорта, секунды.",
     "poll_seconds": "Интервал наблюдения МА во время баффа, секунды.",
 }
@@ -171,10 +180,16 @@ def setting_description(name: str) -> str:
 
 
 def setting_group(name: str) -> str:
+    if name == "predict_target_death":
+        return "МА — бой"
+    if name.startswith("offparty_"):
+        return "МА + офф-пати саппорт"
     if name.startswith("support_mass_buff"):
         return "Масс-пати баффы Саппорта"
     if name.startswith("support_lifeimpact_"):
         return "Саппорт — LifeImpact"
+    if name.startswith("corpse_"):
+        return "МА — скилл на труп"
     if name.startswith("summon_"):
         return "МА — призыв пантеры"
     if name.startswith("support_preserv_"):
@@ -226,6 +241,22 @@ def setting_visible(name: str, config: MeleeConfig) -> bool:
     """
     Показывает зависимые параметры только при включённой функции, сохраняя их значения.
     """
+    if name == "corpse_cast_seconds":
+        return False
+    if isinstance(config, DuoConfig):
+        if name.startswith("offparty_") and name != "offparty_support":
+            return config.offparty_support
+        if config.offparty_support:
+            if name == "heal_attempts":
+                return False
+            if name in {"support_buff2_key", "support_buff2_seconds"}:
+                return name == "support_buff2_key" or config.support_buff2_key is not None
+            if name.startswith(("support_", "follow_", "summon_", "mass_aggro_", "defense_", "stop_attack_")):
+                return False
+            if name in {"heal_threshold", "heal_seconds", "heal_cooldown", "heal_attempts"}:
+                return config.heal_key is not None
+    if name == "corpse_cooldown":
+        return config.corpse_key is not None
     if name in {"loot", "loot_before_farm", "loot_attempts", "loot_hold"}:
         return config.pickup_loot
     if name in {"rest", "stand", "hp_rest_threshold", "hp_resume", "mp_threshold", "mp_resume", "rest_timeout"}:

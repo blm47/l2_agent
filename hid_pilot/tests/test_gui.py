@@ -832,6 +832,39 @@ def test_manual_party_save_cancel_and_changed_geometry(monkeypatch, tmp_path):
         window.close()
 
 
+@pytest.mark.parametrize("offparty", [False, True])
+def test_duo_launch_requires_party_profile_only_for_regular_mode(monkeypatch, tmp_path, offparty):
+    from hid_pilot.duo import DuoConfig
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *a, **k: Mock(available=True))
+    monkeypatch.setattr("hid_pilot.__main__.windows", lambda: [])
+    farmer = Target(hwnd=101, pid=11, title="МА", rect=(0, 0, 100, 100))
+    support = Target(hwnd=102, pid=22, title="Саппорт", rect=(100, 0, 200, 100))
+    monkeypatch.setattr("hid_pilot.__main__.snapshot", lambda hwnd: farmer if hwnd == 101 else support)
+    profiles = Mock()
+    party = Mock()
+    activate = Mock(side_effect=ValueError("Проверка до открытия Pico"))
+    monkeypatch.setattr("hid_pilot.__main__.prepare_duo", profiles)
+    monkeypatch.setattr("hid_pilot.__main__.load_duo_party", party)
+    monkeypatch.setattr("hid_pilot.__main__.activate", activate)
+    window = MainWindow()
+    try:
+        window.targets.addItem("МА", farmer)
+        window.targets.setCurrentIndex(window.targets.count() - 1)
+        window.tabs.setCurrentWidget(window.duo)
+        window.duo.captured = support
+        window.duo.select_script(tmp_path / "test.duo.pilot",
+                                 DuoConfig(offparty_support=offparty))
+        window.port.setText("FAKE")
+        window.launch()
+        profiles.assert_called_once()
+        assert party.call_count == 1
+        activate.assert_called_once()
+    finally:
+        window.close()
+
+
 def test_firmware_menu_blocks_game_execution_and_uses_checked_port(monkeypatch):
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr("hid_pilot.__main__.HardStopHotkey", lambda *a, **k: Mock(available=True))

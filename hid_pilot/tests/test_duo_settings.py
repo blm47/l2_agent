@@ -4,6 +4,19 @@ from hid_pilot.duo import DuoConfig, format_duo_settings, parse_duo_settings
 from hid_pilot.farm_melee import INACTIVE_MELEE_SETTINGS
 
 
+@pytest.mark.parametrize("delay", [0, .25, .7, 1])
+def test_target_delay_range_roundtrip(delay):
+    config = parse_duo_settings(f"set target_delay {delay}\n")
+    assert config.target_delay == delay
+    assert parse_duo_settings(format_duo_settings(config)).target_delay == delay
+
+
+@pytest.mark.parametrize("delay", [-.01, 1.01])
+def test_target_delay_outside_range_is_rejected(delay):
+    with pytest.raises(ValueError):
+        parse_duo_settings(f"set target_delay {delay}\n")
+
+
 def test_set_format_supports_comments_lists_and_optional_heal():
     config = parse_duo_settings('''
 # Настройки как в обычном скрипте.

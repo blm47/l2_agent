@@ -33,9 +33,13 @@ class PicoTransport:
             self.serial.dtr = True
             time.sleep(0.05)
             self.serial.reset_input_buffer()
-            self.firmware_protocol = self.command("HELLO", ("HID_PILOT_V5", "HID_PILOT_V4", "HID_PILOT_V3", "HID_PILOT_V2", "HID_PILOT_V1", "L2_PICO_V1"))
-            self.supports_alt_tab = self.firmware_protocol == "HID_PILOT_V5"
-            # V5 сохраняет набор обычных команд V4; SWITCH доступен отдельно.
+            self.firmware_protocol = self.command("HELLO", ("HID_PILOT_V10", "HID_PILOT_V9", "HID_PILOT_V8", "HID_PILOT_V7", "HID_PILOT_V6", "HID_PILOT_V5", "HID_PILOT_V4", "HID_PILOT_V3", "HID_PILOT_V2", "HID_PILOT_V1", "L2_PICO_V1"))
+            self.supports_alt_tab = self.firmware_protocol in {"HID_PILOT_V10", "HID_PILOT_V9", "HID_PILOT_V5", "HID_PILOT_V6", "HID_PILOT_V7", "HID_PILOT_V8"}
+            self.supports_camera_drag = self.firmware_protocol in {"HID_PILOT_V10", "HID_PILOT_V9", "HID_PILOT_V6", "HID_PILOT_V7", "HID_PILOT_V8"}
+            self.supports_fast_camera = self.firmware_protocol in {"HID_PILOT_V10", "HID_PILOT_V9", "HID_PILOT_V7", "HID_PILOT_V8"}
+            self.supports_strong_camera = self.firmware_protocol == "HID_PILOT_V10"
+            self.supports_camera_zoom = self.firmware_protocol in {"HID_PILOT_V8", "HID_PILOT_V9", "HID_PILOT_V10"}
+            # V5/V6 сохраняют обычные команды V4; дополнительные возможности проверяются отдельно.
             self.protocol = "HID_PILOT_V4" if self.supports_alt_tab else self.firmware_protocol
         except Exception:
             self.serial.close()
@@ -66,6 +70,7 @@ class PicoTransport:
             raise OSError("Pico отключён после ошибки; перезапустите подключение")
         self.sequence += 1
         payload = f"{self.sequence} {command}\n".encode("ascii")
+        sent_at = time.monotonic()
         try:
             if self.serial.write(payload) != len(payload):
                 raise OSError("Pico: неполная запись команды")
@@ -82,8 +87,12 @@ class PicoTransport:
             choices = (expected,) if isinstance(expected, str) else expected
             for choice in choices:
                 if reply == f"{self.sequence} OK {choice}\n".encode("ascii"):
+                    if command == "HB":
+                        self.last_heartbeat = sent_at
                     return choice
-            raise OSError(f"Pico: команда {command}: неверный ответ или timeout: {reply!r}")
+            last_heartbeat = getattr(self, "last_heartbeat", None)
+            gap = f"; после HB {(sent_at - last_heartbeat) * 1000:.0f} мс" if last_heartbeat else ""
+            raise OSError(f"Pico: команда {command}: неверный ответ или timeout: {reply!r}{gap}")
         except Exception:
             self.failed = True
             self.serial.close()

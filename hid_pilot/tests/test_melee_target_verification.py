@@ -142,7 +142,7 @@ def test_incoming_damage_does_not_turn_unknown_hp_into_confirmed_death():
 
 def test_different_known_target_cannot_confirm_old_targets_death():
     farmer, controller, _, _ = harness()
-    farmer.last_target = TargetObservation(at=0, kind="monster", name="Other", level=1, confidence=.95)
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind="monster", name="Other", level=1, confidence=.95)
     farmer.observe = lambda: (1., 1., 0.)
     assert farmer.verify_target(1., 1., 0., ("Gremlin", 1))[3] is False
     controller.key.assert_not_called()
@@ -151,7 +151,7 @@ def test_different_known_target_cannot_confirm_old_targets_death():
 @pytest.mark.parametrize("initial_level,current_level", [(None, 32), (32, None)])
 def test_level_becoming_known_or_missing_is_not_target_change(initial_level, current_level):
     farmer, _, _, _ = harness()
-    farmer.last_target = TargetObservation(at=0, kind="monster", name="Mob", level=current_level,
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind="monster", name="Mob", level=current_level,
                                           confidence=.95)
     farmer.observe = lambda: (1., 1., 0.)
     assert farmer.verify_target(1., 1., 0., ("Mob", initial_level))[3]

@@ -1,7 +1,8 @@
 # Фарм магом
 # Настройки клавиш, порогов и задержек.
 # Макрос 2 выбирает себя и лечит; после лечения цель выбирается заново.
-set next_target 6
+set next_target "6"
+set next_target_near "7"
 set attack 3
 set melee 4
 set loot C
@@ -14,7 +15,7 @@ set mp_threshold 0.10
 set mp_resume 0.90
 set attack_delay 1.5
 set heal_delay 2
-set target_delay 0.7
+set target_delay 0.25
 set approach_delay 4
 set loot_delay 0.7
 set loot_attempts 3

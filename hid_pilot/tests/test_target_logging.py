@@ -29,7 +29,7 @@ def test_target_changes_and_hp_availability_are_logged_without_per_frame_spam(ca
 
 
 @pytest.mark.parametrize("kind,hp,expected", [("player", None, "ESC"),
-                                               ("unknown", None, None),
+                                               ("unknown", None, "ESC"),
                                                ("monster", .8, "3")])
 def test_offensive_decisions_log_target_and_actual_key(caplog, kind, hp, expected):
     farmer, controller, _, _ = harness(attack="3", next_target="6")

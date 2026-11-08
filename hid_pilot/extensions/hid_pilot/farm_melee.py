@@ -12,7 +12,7 @@ from pathlib import Path
 from pydantic import Field, field_validator, model_validator
 
 from hid_pilot.bars import BarProfile
-from hid_pilot.controller import ActionController
+from hid_pilot.controller import ActionController, InvalidTargetNameError
 from hid_pilot.farm import FarmConfig, Farmer
 from hid_pilot.farm import prepare_extension as prepare_farm
 from hid_pilot.script import KEYS
@@ -31,6 +31,10 @@ INACTIVE_MELEE_SETTINGS = frozenset({
 
 
 class MeleeConfig(FarmConfig):
+    predict_target_death: bool = False
+    corpse_key: str | None = None
+    corpse_cast_seconds: float = Field(default=1, ge=.1, le=30)
+    corpse_cooldown: float = Field(default=5, ge=.1, le=300)
     hp_elixir_key: str | None = "NUM2"
     hp_elixir_hp_threshold: float = Field(default=.5, gt=0, le=1)
     hp_elixir_cooldown: float = Field(default=300, ge=300, le=86400)
@@ -96,7 +100,7 @@ class MeleeConfig(FarmConfig):
             values.setdefault("loot_before_farm", previous)
         return values
 
-    @field_validator("buff1_key", "buff2_key", "buff3_key", "buff4_key", "buff5_key", "vampiric_key", "aggro_key")
+    @field_validator("buff1_key", "buff2_key", "buff3_key", "buff4_key", "buff5_key", "vampiric_key", "aggro_key", "corpse_key")
     @classmethod
     def optional_skill_key(cls, value: str | None) -> str | None:
         if value is None or not value.strip():
@@ -141,13 +145,18 @@ class MeleeConfig(FarmConfig):
 
     @model_validator(mode="after")
     def separate_skills(self) -> "MeleeConfig":
+        if self.corpse_key is not None and self.corpse_key in {
+                self.attack, self.aggro_key, self.vampiric_key, *self.damage_keys,
+                *self.overhit_keys, self.next_target, self.next_target_near,
+                self.heal, self.loot, self.rest, self.stand}:
+            raise ValueError("Клавиша скилла на труп должна быть отдельной от боевых и служебных кнопок")
         if self.hp_resume <= self.hp_rest_threshold:
             raise ValueError("hp_resume должен быть больше hp_rest_threshold")
         if set(self.damage_keys) & set(self.overhit_keys):
             raise ValueError("Overhit-клавиши задаются отдельно от дополнительных атак")
         if self.attack in self.overhit_keys:
             raise ValueError("Overhit-клавиша должна отличаться от обычной атаки")
-        if (set(self.damage_keys) | set(self.overhit_keys)) & {self.next_target, self.heal, self.loot, self.rest, self.stand}:
+        if (set(self.damage_keys) | set(self.overhit_keys)) & {self.next_target_near, self.next_target, self.heal, self.loot, self.rest, self.stand}:
             raise ValueError("Клавиши урона не должны совпадать с выбором цели, хилом, лутом или отдыхом")
         return self
 
@@ -324,14 +333,15 @@ class MeleeFarmer(Farmer):
         """
         self.sync_kill_watch()
         progress_at = self.kill_watch_at
-        if self.config.experimental_fast_farm and self.fast_progress_at is not None:
+        if (self.config.experimental_fast_farm or self.config.predict_target_death) and self.fast_progress_at is not None:
             progress_at = max(progress_at, self.fast_progress_at)
         elapsed = self.clock() - progress_at
         if (elapsed <= 120 or self.kill_watch_attempts < 2 or self.sitting
                 or self.in_recovery or self.under_attack or self.casting_ma_buff
                 or getattr(self, "buffing", False)):
             return False
-        progress = "прогресса быстрого фарма" if self.config.experimental_fast_farm else "подтверждённых убийств"
+        progress = ("снижения HP целей" if self.config.experimental_fast_farm or self.config.predict_target_death
+                    else "подтверждённых убийств")
         self.report(f"Зависание: {elapsed:.0f} с без {progress}, "
                     f"попыток боя {self.kill_watch_attempts}; начинаем движение и поиск")
         blocked = self.kill_watch_failed_names.copy()
@@ -497,7 +507,7 @@ class MeleeFarmer(Farmer):
         return True
 
     def press(self, key: str) -> None:
-        if key == self.config.next_target:
+        if key in (self.config.next_target_near, self.config.next_target):
             self.begin_target_selection("next_target")
         if key in {self.config.attack, self.config.heal, *self.config.damage_keys, *self.config.overhit_keys}:
             self.combat_key(key, 100)
@@ -547,8 +557,23 @@ class MeleeFarmer(Farmer):
 
     def is_unsafe_target(self) -> bool:
         observation = self.last_target
-        return self.target_hp_too_large() or observation is not None and (
+        return self.target_without_hp_bar() or self.target_hp_too_large() or observation is not None and (
             observation.kind in {"player", "npc"} or bool(observation.player_class or observation.clan))
+
+    def target_without_hp_bar(self) -> bool:
+        """
+        Запрещает атаку выбранной цели без HP как возможного PvP-игрока.
+        """
+        observation = self.last_target
+        if (observation is None or observation.dead is True or observation.death_marker
+                or observation.hp == 0):
+            return False
+        selected = bool(observation.name or observation.raw_name or observation.player_class
+                        or observation.clan or observation.level is not None
+                        or self.target_selected_at is not None)
+        # Пропуск числового OCR при видимой полосе не означает отсутствие HP-бара.
+        return selected and (observation.hp_bar_present is False
+                             or observation.hp_bar_present is None and observation.hp is None)
 
     def target_hp_maxima(self) -> tuple[int, int] | None:
         # Сравниваем максимумы из текущего OCR, а не проценты заполнения полос.
@@ -575,7 +600,19 @@ class MeleeFarmer(Farmer):
         if self.is_unsafe_target():
             self.log_target_validation("запрещена")
             maxima = self.target_hp_maxima()
-            if (maxima is not None
+            if self.target_without_hp_bar():
+                reason = f"Выбранная цель без HP-бара: возможный PvP-игрок; {self.target_description()}"
+                cp_values = [("МА", self.own_cp)]
+                resources = getattr(self, "previous_resources", {})
+                if (getattr(self, "resource_generation", None) == self.controller.pause_generation
+                        and 0 <= self.clock() - getattr(self, "resources_at", float("-inf")) <= 1):
+                    slot = getattr(self.config, "support_party_slot", None)
+                    cp_values.append(("саппорт", resources.get(f"party_{slot}_cp")))
+                damaged_cp = [f"{role} CP {cp:.1%}" for role, cp in cp_values
+                              if cp is not None and cp < 1]
+                if damaged_cp:
+                    reason += "; дополнительный признак PvP: " + ", ".join(damaged_cp)
+            elif (maxima is not None
                     and maxima[1] >= self.config.target_max_hp_multiplier * maxima[0]):
                 own_maximum, target_maximum = maxima
                 name = self.last_target.name or "неизвестно"
@@ -723,16 +760,13 @@ class MeleeFarmer(Farmer):
         if self.config.overhit_during_combat:
             for key in self.config.overhit_keys:
                 if self.clock() >= self.skill_ready.get(key, 0):
-                    finishing = fallback or (self.training_kills >= 3 and average is not None
+                    finishing = fallback or (average is not None
                                             and target <= average * self.config.overhit_margin)
                     self.report(f"{'Добивание overhit' if finishing else 'Overhit-скилл по откату'}: "
                                 f"{key}; HP цели {target:.1%}")
                     self.combat_key(key, self.config.overhit_hold_ms)
                     self.skill_ready[key] = self.clock() + self.config.overhit_interval
                     return True
-        # Первые три подтверждённых убийства выполняем без дополнительных скиллов.
-        if not fallback and (self.training_kills < 3 or average is None):
-            return False
         finishing = fallback or bool(self.config.overhit_keys) and average is not None and target <= average * self.config.overhit_margin
         early_band = (not finishing and bool(self.config.overhit_keys) and average is not None
                       and target <= average * (self.config.overhit_margin + 1))
@@ -850,27 +884,13 @@ class MeleeFarmer(Farmer):
                                   if until > self.clock()}
         for attempt in range(self.config.search_moves + 1):
             self.before_target_selection()
-            self.invalidate_target()
-            self.press(self.config.next_target)
-            self.controller.wait(self.config.target_delay)
-            _, _, target = self.observe()
-            if self.reject_unsafe_target():
-                self.report("Next target отклонён проверкой безопасности: пробуем /target по известным именам")
-                target = self.search_known_target()
-                if target is not None:
-                    return target
-                continue
-            if self.reject_high_level_target():
-                return self.search_known_target()
-            identity = self.monster_identity()
-            blocked = identity is not None and identity[0] in self.unreachable_until
-            if self.alive_target(target) and (not blocked or self.under_attack):
+            target = self.search_next_targets()
+            if target is not None:
                 return target
-            if blocked:
-                self.report(f"Пропускаем недоступную цель {identity[0]} после next target")
-                self.press("ESC")
-                self.invalidate_target()
-            self.report("Next target не нашёл подходящую цель: пробуем /target по известным именам")
+            if self.under_attack:
+                self.report("Получаем урон без живой цели: повторяем next target без /target и поискового WASD")
+                self.controller.wait(.2)
+                continue
             target = self.search_known_target()
             if target is not None:
                 return target
@@ -884,12 +904,40 @@ class MeleeFarmer(Farmer):
                 self.controller.key(random.choice("WASD"), random.randint(2000, 3000))
         return None
 
+    def search_next_targets(self, *, fast: bool = False) -> float | None:
+        """
+        До трёх раз проверяет ближнюю и дальнюю цель с ожиданием 0,3 с после нажатия.
+        """
+        generation = self.controller.pause_generation
+        for attempt in range(3):
+            for key in (self.config.next_target_near, self.config.next_target):
+                self.invalidate_target()
+                self.press(key)
+                self.controller.wait(.3)
+                _, _, target = MeleeFarmer.observe(self) if fast else self.observe()
+                reading = "неизвестно" if target is None else f"{target:.1%}"
+                self.report(f"Next target {key}: проход {attempt + 1}/3, HP цели {reading}")
+                if generation != self.controller.pause_generation:
+                    return None
+                if self.reject_unsafe_target() or self.reject_high_level_target():
+                    continue
+                identity = self.monster_identity()
+                blocked = identity is not None and identity[0] in self.unreachable_until
+                if self.alive_target(target) and (not blocked or self.under_attack):
+                    return target
+                if blocked:
+                    self.press("ESC")
+                    self.invalidate_target()
+        return None
+
     def on_target_missing(self) -> None:
         """
         Даёт дуо включить следование перед перемещением при неудачном выборе цели.
         """
 
     def search_known_target(self) -> float | None:
+        if self.under_attack:
+            return None
         excluded = set(self.unreachable_until)
         if self.unreachable_selections:
             excluded.add(self.unreachable_name)
@@ -904,11 +952,21 @@ class MeleeFarmer(Farmer):
             random.shuffle(self.target_name_pool)
         # Сохраняем остаток пула между поисками: успешный /target не возвращает имя в начало.
         while self.target_name_pool:
-            name = self.target_name_pool.pop()
             self.before_target_selection()
+            # Наблюдение или подготовка могли обнаружить урон уже во время перебора имён.
+            if self.under_attack:
+                return None
+            name = self.target_name_pool.pop()
             self.invalidate_target()
             self.begin_target_selection("/target")
-            self.controller.target_by_name(name)
+            try:
+                self.controller.target_by_name(name)
+            except InvalidTargetNameError:
+                # Не исправляем OCR догадкой: пропускаем имя и продолжаем штатный поиск.
+                self.known_mobs.pop(name, None)
+                logger.warning("Пропускаем OCR-имя цели %r: неподдерживаемые символы; "
+                               "продолжаем поиск моба", name)
+                continue
             self.controller.wait(self.config.target_delay)
             _, _, target = self.observe()
             if self.reject_unsafe_target():
@@ -997,16 +1055,14 @@ class MeleeFarmer(Farmer):
 
     def switch_fast_target(self) -> None:
         """
-        Выбирает следующую цель без target_delay и атакует после свежей проверки CV.
+        Выбирает ближнюю, затем дальнюю цель с паузой перед проверкой CV.
         """
         self.fast_target_ready = False
         self.attacking = False
         self.target_pending = False
         self.invalidate_target()
         generation = self.controller.pause_generation
-        self.press(self.config.next_target)
-        # До первой атаки новой цели не запускаем визиты ассиста во второе окно.
-        _, _, target = MeleeFarmer.observe(self)
+        target = self.search_next_targets(fast=True)
         if (generation != self.controller.pause_generation
                 or not self.alive_target(target) or self.reject_unsafe_target()
                 or self.reject_high_level_target()):
@@ -1055,7 +1111,7 @@ class MeleeFarmer(Farmer):
         opening_overhit = (not already_attacking and self.config.overhit_keys and
                            ((target < .2 if self.config.experimental_fast_farm else
                             self.config.overhit_during_combat or target <= self.config.overhit_hp_threshold or
-                            self.training_kills >= 3 and average is not None and
+                            average is not None and
                             target <= average * (self.config.overhit_margin + (1 if self.config.overhit_early_chance > 0 else 0))))
                            and self.use_damage_skill(target, identity))
         next_attack = self.clock() + self.config.attack_delay
@@ -1067,6 +1123,8 @@ class MeleeFarmer(Farmer):
         deadline = self.clock() + self.config.combat_timeout
         previous_hp, previous_at = target, self.clock()
         samples: list[float] = []
+        death_samples: deque[tuple[float, float]] = deque(maxlen=8)
+        death_token: object = None
         measuring = not opening_overhit
         kills_before = sum(self.mob_statistics.counts.values())
         heals = 0
@@ -1160,6 +1218,7 @@ class MeleeFarmer(Farmer):
                 else:
                     self.report("Смерть не подтверждена вторым кадром: продолжаем поиск")
                     return
+                self.use_corpse_skill(last_known_identity, generation=identity_generation)
                 if self.config.pickup_loot:
                     self.pickup_loot()
                 return
@@ -1171,6 +1230,7 @@ class MeleeFarmer(Farmer):
                 resume_attack = True
                 continue
             if resume_attack:
+                death_samples.clear()
                 if self.last_target is not None and self.last_target.kind in {"player", "npc"}:
                     self.report("После лечения выбрана другая цель; смерть моба не подтверждена")
                     return
@@ -1199,6 +1259,18 @@ class MeleeFarmer(Farmer):
                 if heals == self.config.heal_attempts:
                     self.report("Лимит нажатий лечения в текущем бою достигнут; продолжаем добивать цель")
                 continue
+            token = (self.controller.pause_generation, getattr(self.last_target, "epoch", None),
+                     self.monster_identity())
+            now = self.clock()
+            if (token != death_token or death_samples and
+                    (now - death_samples[-1][0] > 1 or target > death_samples[-1][1])):
+                death_samples.clear()
+            death_token = token
+            death_samples.append((now, target))
+            while death_samples and now - death_samples[0][0] > 1:
+                death_samples.popleft()
+            if self.try_predicted_death(death_samples, identity):
+                return
             delta = previous_hp - target
             if (measuring and delta > 0
                     and 0 < self.clock() - previous_at <= self.config.damage_sample_gap):
@@ -1262,6 +1334,67 @@ class MeleeFarmer(Farmer):
         direction = random.choice("WASD")
         self.report(f"Отменяем бег к сброшенной цели: {direction}, удержание 300 мс")
         self.controller.key(direction, 300, exact=True)
+
+    def try_predicted_death(self, samples: deque[tuple[float, float]],
+                            identity: tuple[str, int | None] | None) -> bool:
+        """
+        По свежей скорости снижения HP ждёт 0,5 с и продолжает без подтверждения смерти.
+        """
+        observation = self.last_target
+        if (not self.config.predict_target_death or len(samples) < 3 or identity is None
+                or observation is None or observation.kind != "monster"
+                or self.monster_identity() != identity or not self.attacking
+                or self.unsafe_target_rejected):
+            return False
+        start, first_hp = samples[0]
+        end, hp = samples[-1]
+        elapsed = end - start
+        loss = first_hp - hp
+        if (not .5 <= elapsed <= 1 or not 0 <= self.clock() - end <= .1
+                or hp <= 0 or loss <= self.config.progress_epsilon
+                or hp / (loss / elapsed) > .5):
+            return False
+        generation = self.controller.pause_generation
+        epoch = observation.epoch
+        self.report(f"Прогноз смерти: HP {hp:.1%}, урон {loss / elapsed:.1%}/с; "
+                    "ждём 0,5 с без подтверждения кадром")
+        self.controller.wait(.5)
+        self.controller.checkpoint()
+        if (generation != self.controller.pause_generation or self.last_target is None
+                or self.last_target.epoch != epoch or self.monster_identity() != identity):
+            samples.clear()
+            return False
+        self.target_pending = False
+        self.reset_unreachable()
+        self.mob_statistics.record_unconfirmed_kill()
+        # Измеренное снижение HP — прогресс фарма, но не доказанное убийство.
+        self.fast_progress_at = self.clock()
+        self.publish_statistics()
+        self.use_corpse_skill(identity, predicted=True, generation=generation)
+        if self.config.pickup_loot:
+            self.pickup_loot()
+        self.switch_fast_target()
+        return True
+
+    def use_corpse_skill(self, identity: tuple[str, int | None] | None, *,
+                         predicted: bool = False, generation: int | None = None) -> None:
+        """
+        Один раз отправляет скилл после смерти или прогноза, без нового кадра и ожидания каста.
+        """
+        key = self.config.corpse_key
+        if key is None or self.clock() < self.skill_ready.get(key, 0):
+            return
+        observation = self.last_target
+        if ((generation is not None and self.controller.pause_generation != generation) or identity is None
+                or self.monster_identity() != identity or observation is None
+                or observation.kind != "monster"
+                or not predicted and (not (observation.hp == 0 or observation.death_marker)
+                                      or observation.hp is not None and observation.hp > 0)):
+            self.report("Скилл на труп пропущен: тот же мёртвый моб не подтверждён")
+            return
+        self.controller.key(key, 100)
+        self.skill_ready[key] = self.clock() + self.config.corpse_cooldown
+        self.report(f"МА — скилл на труп: {key}")
 
     def pickup_loot(self) -> None:
         duration = round(self.config.loot_hold * 1000)

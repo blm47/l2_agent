@@ -175,7 +175,7 @@ def test_two_immediate_targets_do_not_enable_follow_between_kills():
     assert controller.events.count((2, farmer.config.follow_key)) == 1
     assert controller.events.count((2, farmer.config.support_key)) == 2
     first_loot = controller.events.index((1, farmer.config.loot))
-    assert controller.events[first_loot + 1] == (1, farmer.config.next_target)
+    assert controller.events[first_loot + 1] == (1, farmer.config.next_target_near)
 
 
 def test_missing_target_enables_follow_once_before_search_movement():
@@ -206,7 +206,7 @@ def test_target_found_after_search_switches_from_follow_to_attack_help():
 
     controller.key = key
     controller.capture = lambda: (1., 0. if dead[0] else
-                                 (.8 if farmer.attacking else .9) if selections[0] >= 2 else None, False)
+                                 (.8 if farmer.attacking else .9) if selections[0] >= 4 else None, False)
     farmer.fight()
     assert controller.events.count((2, farmer.config.follow_key)) == 1
     assert controller.events.count((2, farmer.config.support_key)) == 1
@@ -261,7 +261,7 @@ def test_full_cycle_returns_to_farmer_and_loots_only_after_death():
                                  .8 if duo.attacking else .9, False)
     duo.run()
     keys = [event for event in controller.events if isinstance(event[0], int)]
-    assert keys == [(2, "F1"), (2, "F2"), (1, "3"), (1, "R"), (2, "F3"),
+    assert keys == [(2, "F1"), (2, "F2"), (1, "7"), (1, "R"), (2, "F3"),
                     (1, "5")]
     assert controller.role == FARMER
     for index, event in enumerate(controller.events):
@@ -452,7 +452,8 @@ def test_search_has_attempt_limit_without_attack():
     controller.frames = iter([(1., None, False)])
     with pytest.raises(RuntimeError, match="не нашли подходящую живую цель"):
         duo.acquire()
-    assert controller.events.count((1, "3")) == 2
+    assert controller.events.count((1, duo.config.next_target)) == 6
+    assert controller.events.count((1, duo.config.next_target_near)) == 6
     assert (1, "R") not in controller.events
 
 
@@ -496,6 +497,7 @@ def test_prepare_requires_distinct_windows_and_farmer_profile(tmp_path):
 
 
 def switch_controller(monkeypatch):
+    monkeypatch.setattr("hid_pilot.controller.win32gui.GetForegroundWindow", lambda: FARMER.hwnd)
     source = Mock(target=FARMER)
     destination = Mock(target=SUPPORT)
     transport = Mock()

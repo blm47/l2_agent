@@ -12,7 +12,7 @@ import numpy as np
 from pydantic import Field, field_validator, model_validator
 
 from hid_pilot.bars import BarProfile, bar_fraction
-from hid_pilot.party import PartyMember, PartyProfile
+from hid_pilot.party import PartyMember, PartyProfile, read_party_bars
 from hid_pilot.controller import ActionController
 from hid_pilot.desktop import Target
 from hid_pilot.support_life import SupportLifeObserver, empty_hp_bar
@@ -30,6 +30,10 @@ SUMMON_MIN_MP = .1
 SUMMON_MAX_ATTEMPTS = 10
 
 class DuoConfig(MeleeConfig):
+    offparty_support: bool = False
+    offparty_invite_key: str = "F7"
+    offparty_invite_seconds: float = Field(default=1, ge=.1, le=10)
+    offparty_kick_key: str = "F8"
     summon_key: str | None = "NUM6"
     summon_cast_seconds: float = Field(default=20, ge=.1, le=120)
     summon_cooldown: float = Field(default=5, ge=.1, le=300)
@@ -115,6 +119,8 @@ class DuoConfig(MeleeConfig):
         if not isinstance(data, dict):
             return data
         values = data.copy()
+        values.pop("offparty_party_heal", None)
+        values.pop("offparty_party_hp_threshold", None)
         for old, new in (("next_target_key", "next_target"), ("attack_key", "attack"),
                          ("loot_key", "loot"), ("target_seconds", "target_delay"),
                          ("combat_seconds", "combat_timeout"), ("loot_seconds", "loot_delay")):
@@ -152,7 +158,7 @@ class DuoConfig(MeleeConfig):
     def support_elixir_key(cls, value: str | None) -> str | None:
         return cls.optional_elixir_key(value)
 
-    @field_validator("buff_key", "follow_key", "support_key",
+    @field_validator("buff_key", "follow_key", "support_key", "offparty_invite_key", "offparty_kick_key",
                      "stop_attack_key", "defense_target_key")
     @classmethod
     def allowed_key(cls, value: str) -> str:
@@ -242,6 +248,7 @@ class DuoFarmer(MeleeFarmer):
         self.support = support
         self.support_life = support_life
         self.support_lost = False
+        self.offparty_busy = False
         self.summon_recovery = SummonRecovery()
         self.summon_servicing = False
         self.summon_casting = False
@@ -393,7 +400,7 @@ class DuoFarmer(MeleeFarmer):
         """
         Читает саппорта из текущего кадра МА; пустое HP видимой строки означает смерть.
         """
-        if self.party_profile is None:
+        if self.party_profile is None or self.config.offparty_support:
             return {}
         slot = self.config.support_party_slot - 1
         hp_image = self.profile.crop(image, self.party_profile.box("hp", slot))
@@ -425,7 +432,15 @@ class DuoFarmer(MeleeFarmer):
             resources["farmer_cp"] = self.profile.read(image, "cp")
         if self.party_profile is not None:
             resources.update(self.support_resources(image))
-            if self.display_data is not None:
+            if self.config.offparty_support:
+                # Читаем все строки именно текущего кадра, без устаревшего display_data.
+                for member in read_party_bars(image, self.party_profile):
+                    resources[f"party_{member.slot}_hp"] = member.hp
+                # Пропавшая ранее наблюдавшаяся строка остаётся неизвестной, а не здоровой.
+                for name in self.previous_resources:
+                    if name.startswith("party_") and name.endswith("_hp"):
+                        resources.setdefault(name, None)
+            elif self.display_data is not None:
                 # Эти HP/CP уже прочитаны из того же кадра, без дополнительного OCR.
                 for member in self.display_data[2]:
                     if isinstance(member, PartyMember):
@@ -602,6 +617,11 @@ class DuoFarmer(MeleeFarmer):
         return False
 
     def cast_buffs(self) -> None:
+        if self.config.offparty_support:
+            if self.controller.active_time() >= self.next_buff:
+                self.buff()
+            super().cast_buffs()
+            return
         if self.support_lost:
             return
         if self.config.summon_key is not None and (not self.summon_recovery.checked
@@ -623,6 +643,8 @@ class DuoFarmer(MeleeFarmer):
         """
         Даёт один пати-бафф двойным нажатием и сразу возвращает окно МА.
         """
+        if self.config.offparty_support:
+            return False
         generation = self.controller.pause_generation
         if generation != self.mass_buff_generation:
             self.mass_buff_index = 0
@@ -684,6 +706,21 @@ class DuoFarmer(MeleeFarmer):
                 or not self.buffing and self.controller.active_time() >= self.next_buff)
 
     def buff(self) -> None:
+        if self.config.offparty_support:
+            hp, _, _ = self.observe()
+            if hp <= max(self.config.buff_min_hp, self.config.heal_threshold):
+                return
+            if (self.resource_generation == self.controller.pause_generation
+                    and 0 <= self.controller.active_time() - self.resources_at <= 1
+                    and any(name.startswith("party_") and name.endswith("_hp")
+                            and value is not None and 0 < value < self.config.heal_threshold
+                            for name, value in self.previous_resources.items())):
+                return
+            sent_at = self.offparty_action(self.config.buff_key, self.config.buff_seconds)
+            if sent_at is not None:
+                self.next_buff = sent_at + self.config.rebuff_minutes * 60
+                self.buff_actions += 1
+            return
         hp, _, _ = self.observe()
         if self.buffing or hp <= self.config.buff_min_hp or self.critical_party():
             return
@@ -765,6 +802,9 @@ class DuoFarmer(MeleeFarmer):
     def visit(self, key: str, seconds: float, *, settle_seconds: float = 0.,
               key_milliseconds: int = 80, repeat: bool = False, exact: bool = False,
               double_press: bool = False) -> float | None:
+        if self.config.offparty_support:
+            # В офф-пати режиме запрещены все обходные визиты: только отдельный протокол.
+            return None
         if self.support_lost:
             return
         generation = self.controller.pause_generation
@@ -795,6 +835,53 @@ class DuoFarmer(MeleeFarmer):
         self.check()
         self.controller.switch_window(self.farmer)
         return sent_at
+
+    def offparty_action(self, key: str, seconds: float) -> float | None:
+        """
+        Приглашает саппорта, выполняет баффы или хил и исключает его кнопкой МА.
+        """
+        if (not self.config.offparty_support or self.offparty_busy or self.support_lost
+                or key not in {self.config.buff_key, self.config.heal_key}):
+            return None
+        generation = self.controller.pause_generation
+
+        def check_transaction() -> None:
+            self.check()
+            if generation != self.controller.pause_generation:
+                raise RuntimeError("Офф-пати действие прервано паузой; проверьте пати перед новым START")
+
+        self.offparty_busy = True
+        try:
+            check_transaction()
+            self.controller.switch_window(self.farmer)
+            check_transaction()
+            self.controller.key(self.config.offparty_invite_key, 150, exact=True)
+            self.report(f"Офф-пати: приглашение от МА через {self.config.offparty_invite_key}")
+            self.controller.wait(self.config.offparty_invite_seconds)
+            check_transaction()
+            self.controller.switch_window(self.support)
+            self.observe_support_life()
+            self.controller.wait(.5)
+            check_transaction()
+            sequence = [(key, seconds)]
+            if key == self.config.buff_key and self.config.support_buff2_key is not None:
+                sequence.append((self.config.support_buff2_key, self.config.support_buff2_seconds))
+            sent_at = self.controller.active_time()
+            for macro, duration in sequence:
+                check_transaction()
+                self.controller.key(macro, 150, exact=True)
+                self.report(f"Офф-пати: макрос саппорта {macro}, ожидание {duration:g} с")
+                self.controller.wait(duration)
+                check_transaction()
+            check_transaction()
+            self.controller.switch_window(self.farmer)
+            check_transaction()
+            self.controller.key(self.config.offparty_kick_key, 150, exact=True)
+            self.report(f"Офф-пати: исключение саппорта кнопкой МА {self.config.offparty_kick_key}")
+            return sent_at
+        finally:
+            # STOP и потеря фокуса не разрешают переключение окна в finally.
+            self.offparty_busy = False
 
     def send_support_skill(self, key: str, generation: int) -> float | None:
         """
@@ -912,6 +999,33 @@ class DuoFarmer(MeleeFarmer):
             self._ud_observing = False
 
     def observe(self) -> tuple[float, float, float | None]:
+        if self.config.offparty_support:
+            hp, mp, target = self.observe_ma()
+            fresh = (self.resource_generation == self.controller.pause_generation
+                     and 0 <= self.controller.active_time() - self.resources_at <= 1)
+            members = {name: value for name, value in self.previous_resources.items()
+                       if name.startswith("party_") and name.endswith("_hp")} if fresh else {}
+            low_party = {name: value for name, value in members.items()
+                         if value is not None and 0 < value < self.config.heal_threshold}
+            party_request = bool(low_party)
+            party_recovered = (bool(members) and all(value is not None and
+                                   (value == 0 or value >= self.config.heal_threshold)
+                                   for value in members.values()))
+            if hp >= self.config.heal_threshold and party_recovered:
+                self.heals = 0
+            if (hp > 0 and (hp < self.config.heal_threshold or party_request)
+                  and self.config.heal_key is not None and not self.offparty_busy
+                  and self.controller.active_time() - self.last_heal >= self.config.heal_cooldown):
+                # Низкое HP может сохраняться под уроном: продолжаем хил по откату без остановки фарма.
+                if party_request:
+                    reason = ", ".join(f"{name}: {value:.0%}" for name, value in low_party.items())
+                    self.report(f"Офф-пати: запрос пати-хила по HP участников: {reason}")
+                sent_at = self.offparty_action(self.config.heal_key, self.config.heal_seconds)
+                if sent_at is not None:
+                    self.last_heal = sent_at
+                    self.heals += 1
+                hp, mp, target = self.observe_ma()
+            return hp, mp, target
         if self.support_lost:
             # В завершающем бою нет агра новых целей, хила и визитов к погибшему саппорту.
             return super().observe()
@@ -1068,14 +1182,14 @@ class DuoFarmer(MeleeFarmer):
         return super().target_hp_too_large() and self.strong_aggressor_allowed is None
 
     def press(self, key: str) -> None:
-        if key == self.config.next_target:
+        if key in (self.config.next_target_near, self.config.next_target):
             self.strong_aggressor_allowed = None
             self.strong_aggressor_pending = False
             if self.strong_aggressor_generation != self.controller.pause_generation:
                 self.reset_strong_aggressor_search()
             self.strong_aggressor_generation = self.controller.pause_generation
         super().press(key)
-        if key == self.config.next_target:
+        if key in (self.config.next_target_near, self.config.next_target):
             self.strong_aggressor_pending = True
 
     def reject_unsafe_target(self) -> bool:
@@ -1189,6 +1303,8 @@ class DuoFarmer(MeleeFarmer):
                      and self.support_vampiric_generation == self.controller.pause_generation))
 
     def support_consumables(self) -> bool:
+        if self.config.offparty_support:
+            return False
         if self.support_lost:
             return False
         now = self.controller.active_time()
@@ -1325,6 +1441,8 @@ class DuoFarmer(MeleeFarmer):
         return True
 
     def support_maintenance(self, hp: float, target: float | None) -> bool:
+        if self.config.offparty_support:
+            return False
         if self.support_lost:
             return False
         now = self.controller.active_time()
@@ -1452,7 +1570,7 @@ class DuoFarmer(MeleeFarmer):
         """
         Сохраняет MP МА до подтверждения пантеры, разрешая только автоатаку.
         """
-        return (self.config.summon_key is not None and not self.support_lost
+        return (not self.config.offparty_support and self.config.summon_key is not None and not self.support_lost
                 and (not self.summon_recovery.checked or self.summon_recovery.pending))
 
     def saving_mana_for_buffs(self) -> bool:
@@ -1484,10 +1602,11 @@ class DuoFarmer(MeleeFarmer):
         return True
 
     def assist_support(self) -> None:
+        if self.config.offparty_support:
+            return
         if (self.target_validating or self.support_lost or self.escaping or self.buffing or self.verifying_target
                 or self.controller.active_time() < self.mass_buff_ready
                 or self.casting_ma_buff or not self.attacking or not self.support_attack_started
-                or (not self.config.experimental_fast_farm and not self.support_attack_confirmed)
                 or self.support_in_danger()
                 or self.critical_party()
                 or (self.support_rescue_generation == self.controller.pause_generation
@@ -1517,6 +1636,8 @@ class DuoFarmer(MeleeFarmer):
         self.ensure_support_follow()
 
     def ensure_support_follow(self) -> None:
+        if self.config.offparty_support:
+            return
         if not self.escaping and self.controller.active_time() < self.mass_buff_ready:
             return
         if not self.following or self.follow_generation != self.controller.pause_generation:
@@ -1627,6 +1748,8 @@ class DuoFarmer(MeleeFarmer):
             self.summon_casting = False
 
     def service_summon(self) -> None:
+        if self.config.offparty_support:
+            return
         """
         Ожидает призыва; при нехватке MP переносит пати-баффы в обычный фарм.
         """
@@ -1759,7 +1882,9 @@ class DuoFarmer(MeleeFarmer):
 
     def run(self) -> None:
         try:
-            if self.config.summon_key is not None:
+            if self.config.offparty_support and self.party_profile is None:
+                raise RuntimeError("Для офф-пати хила участников настройте панель пати в окне МА")
+            if self.config.summon_key is not None and not self.config.offparty_support:
                 if not isinstance(self.profile, BarProfile) or self.profile.summon is None:
                     raise RuntimeError("Для автопризыва настройте панель самона в окне МА "
                                        "или отключите summon_key")

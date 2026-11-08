@@ -8,7 +8,7 @@ from test_melee_farm import harness
 
 
 def named(farmer, name="Gremlin"):
-    farmer.last_target = TargetObservation(at=farmer.clock(), kind="monster", name=name, confidence=.99)
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=farmer.clock(), kind="monster", name=name, confidence=.99)
 
 
 def test_escape_starts_only_after_five_failed_selections_of_same_name():

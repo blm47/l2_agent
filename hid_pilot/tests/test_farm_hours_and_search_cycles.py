@@ -53,7 +53,7 @@ def test_full_search_cycle_repeats_movement_next_target_and_chat():
     with pytest.raises(RuntimeError, match="циклов"):
         farmer.acquire()
     keys = [call.args for call in controller.key.call_args_list]
-    assert sum(key == farmer.config.next_target for key, _ in keys) == 8
+    assert sum(key == farmer.config.next_target for key, _ in keys) == 24
     assert sum(key in "WASD" for key, _ in keys) == 6
     assert controller.target_by_name.call_count == 8
 
@@ -66,7 +66,7 @@ def test_target_found_on_second_full_cycle_stops_search():
     def select(name):
         if controller.target_by_name.call_count == 2:
             state[2] = .7
-            farmer.last_target = TargetObservation(at=0, name=name, kind="monster", confidence=.95)
+            farmer.last_target = TargetObservation(hp_bar_present=True, at=0, name=name, kind="monster", confidence=.95)
 
     controller.target_by_name.side_effect = select
     assert farmer.acquire() == .7
@@ -79,8 +79,8 @@ def test_search_without_movement_retries_next_target_and_names():
     farmer.known_mobs = {"Gremlin": 1}
     with pytest.raises(RuntimeError, match="циклов"):
         farmer.acquire()
-    assert controller.key.call_count == 8
-    assert all(call.args[0] == farmer.config.next_target for call in controller.key.call_args_list)
+    assert controller.key.call_count == 48
+    assert all(call.args[0] in {farmer.config.next_target_near, farmer.config.next_target} for call in controller.key.call_args_list)
     assert controller.target_by_name.call_count == 8
 
 
@@ -93,7 +93,7 @@ def test_rejected_next_target_still_tries_safe_named_monster(monkeypatch, kind, 
     farmer.known_mobs = {"Gremlin": 1}
 
     def select_next(key, ms, **kwargs):
-        if key == farmer.config.next_target:
+        if key in {farmer.config.next_target_near, farmer.config.next_target}:
             state[2] = 1.
             farmer.last_target = TargetObservation(at=0, kind=kind, hp=1.)
             farmer.observation_details = {"hp": "OCR 2625/2625", "target_hp": f"OCR 1/{maximum}"}
@@ -108,5 +108,5 @@ def test_rejected_next_target_still_tries_safe_named_monster(monkeypatch, kind, 
     controller.target_by_name.side_effect = select_name
     assert farmer.acquire() == .7
     controller.target_by_name.assert_called_once_with("Gremlin")
-    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target, "ESC"]
+    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target_near, "ESC", farmer.config.next_target, "ESC"] * 3
     assert not farmer.unsafe_target_rejected

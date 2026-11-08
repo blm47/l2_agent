@@ -22,12 +22,13 @@ set target_max_hp_multiplier 8.0
 set ud_key "F6"
 set ud_cooldown 900
 set ud_damage_per_second 0.2
-set ud_hp_threshold 0.07
+set ud_hp_threshold 0.14
 set support_buff_min_mp 0.8
 set support_buff_emergency_hp 0.2
 
 set humanize true
 set next_target "6"
+set next_target_near "7"
 set attack "3"
 set loot "C"
 set heal "F1"
@@ -38,18 +39,18 @@ set mp_threshold 0.1
 set mp_resume 0.9
 set attack_delay 1.5
 set heal_delay 14.0
-set target_delay 0.7
+set target_delay 0.25
 set approach_delay 5.0
 set loot_attempts 2
 set combat_timeout 90.0
-set stuck_timeout 5.0
+set stuck_timeout 4.0
 set progress_epsilon 0.002
 set rest_timeout 180.0
 set observation_attempts 30
 set observation_delay 0.5
 set heal_attempts 10
-set cycles 1000
-set max_hours 3.0
+set cycles 10000
+set max_hours 9.0
 set buff_delay_minutes 1.0
 set aggro_key "2"
 set buff1_key "F12"

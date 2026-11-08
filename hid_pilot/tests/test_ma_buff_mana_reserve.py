@@ -48,7 +48,7 @@ def test_low_mp_combat_uses_only_normal_attack_and_loot_while_rebuff_pending():
     keys = [call.args[0] for call in controller.key.call_args_list]
     assert keys.count(farmer.config.attack) >= 3
     assert keys[-1] == farmer.config.loot
-    assert set(keys) <= {farmer.config.next_target, farmer.config.attack, farmer.config.loot}
+    assert set(keys) <= {farmer.config.next_target_near, farmer.config.next_target, farmer.config.attack, farmer.config.loot}
 
 
 def test_recovered_mp_casts_queued_buff_before_damage_skill_resumes():

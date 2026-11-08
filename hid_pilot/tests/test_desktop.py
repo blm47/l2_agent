@@ -6,6 +6,26 @@ import pywintypes
 from hid_pilot.desktop import ActivationDenied, Desktop, FocusLost, Target, activate
 
 
+def test_capture_releases_owned_dc_even_when_allocation_and_cleanup_fail(monkeypatch):
+    desktop = Desktop(Target(hwnd=1, pid=2, title="LU4", rect=(0, 0, 100, 100)))
+    monkeypatch.setattr(desktop, "check", Mock())
+    source, destination, bitmap = Mock(), Mock(), Mock()
+    source.CreateCompatibleDC.return_value = destination
+    bitmap.CreateCompatibleBitmap.side_effect = RuntimeError("Ошибка выделения bitmap")
+    destination.DeleteDC.side_effect = RuntimeError("Ошибка очистки destination")
+    create = Mock(return_value=123)
+    monkeypatch.setattr("hid_pilot.desktop.win32gui.CreateDC", create)
+    monkeypatch.setattr("hid_pilot.desktop.win32ui.CreateDCFromHandle", Mock(return_value=source))
+    monkeypatch.setattr("hid_pilot.desktop.win32ui.CreateBitmap", Mock(return_value=bitmap))
+    delete = Mock()
+    monkeypatch.setattr("hid_pilot.desktop.win32gui.DeleteObject", delete)
+    with pytest.raises(RuntimeError, match="выделения bitmap"):
+        desktop.capture()
+    source.DeleteDC.assert_called_once()
+    delete.assert_called_once()
+    create.assert_called_once_with("DISPLAY", None, None)
+
+
 def test_activation_refreshes_geometry_without_changing_identity(monkeypatch):
     target = Target(hwnd=1, pid=2, title="LU4", rect=(0, 0, 100, 100))
     current = target.model_copy(update={"rect": (10, 10, 200, 200)})

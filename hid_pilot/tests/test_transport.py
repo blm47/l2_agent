@@ -26,6 +26,23 @@ def test_fragmented_cdc_answer_is_accumulated_without_resending(chunks):
     transport.serial.close.assert_not_called()
 
 
+def test_explicit_heartbeat_updates_timestamp_for_foreground_commands(monkeypatch):
+    monkeypatch.setattr("hid_pilot.transport.time.monotonic", lambda: 12.5)
+    transport = command_transport([b"4 OK ALIVE\n"])
+    transport.last_heartbeat = 12.
+    transport.command("HB", "ALIVE")
+    assert transport.last_heartbeat == 12.5
+
+
+def test_rejection_reports_gap_since_last_heartbeat(monkeypatch):
+    monkeypatch.setattr("hid_pilot.transport.time.monotonic", lambda: 12.5)
+    transport = command_transport([b"4 ERR REJECTED\n"])
+    transport.last_heartbeat = 12.
+    with pytest.raises(OSError, match="после HB 500 мс"):
+        transport.command("KEY 5 120", "SENT")
+    transport.serial.write.assert_called_once_with(b"4 KEY 5 120\n")
+
+
 @pytest.mark.parametrize("reply", [b"4 ERR REJECTED\n", b"3 OK ALIVE\n", b"5 OK ALIVE\n"])
 def test_rejected_or_wrong_sequence_stops_without_resending(reply):
     transport = command_transport([reply])
@@ -74,6 +91,32 @@ def test_unknown_firmware_rejected_before_arm(monkeypatch):
         PicoTransport("COM99")
     serial.write.assert_called_once_with(b"1 HELLO\n")
     serial.close.assert_called()
+
+
+def test_v7_handshake_enables_fast_camera_and_preserves_ordinary_v4_keys(monkeypatch):
+    serial = Mock()
+    serial.write.side_effect = len
+    serial.read_until.return_value = b"1 OK HID_PILOT_V7\n"
+    monkeypatch.setattr("serial.Serial", lambda *a, **k: serial)
+    monkeypatch.setattr("hid_pilot.transport.time.sleep", lambda _: None)
+    transport = PicoTransport("COM99")
+    assert transport.supports_camera_drag and transport.supports_alt_tab
+    assert transport.supports_fast_camera
+    assert transport.protocol == "HID_PILOT_V4"
+    serial.write.assert_called_once_with(b"1 HELLO\n")
+    serial.close.assert_not_called()
+
+
+@pytest.mark.parametrize("protocol, supported", [("HID_PILOT_V9", False), ("HID_PILOT_V10", True)])
+def test_paced_camera_requires_v10(monkeypatch, protocol, supported):
+    serial = Mock()
+    serial.write.side_effect = len
+    serial.read_until.return_value = f"1 OK {protocol}\n".encode()
+    monkeypatch.setattr("serial.Serial", lambda *a, **kw: serial)
+    monkeypatch.setattr("hid_pilot.transport.time.sleep", lambda _: None)
+    transport = PicoTransport("COM99")
+    assert transport.supports_strong_camera is supported
+    assert transport.supports_camera_zoom and transport.supports_fast_camera
 
 
 def test_v5_normalizes_game_protocol_and_enables_separate_switch(monkeypatch):

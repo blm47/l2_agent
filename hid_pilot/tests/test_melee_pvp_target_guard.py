@@ -118,7 +118,7 @@ def test_next_target_discards_player_or_npc_then_finds_monster(monkeypatch, kind
 
     def key(name, duration, **kwargs):
         original(name, duration, **kwargs)
-        if name == farmer.config.next_target:
+        if name in {farmer.config.next_target_near, farmer.config.next_target}:
             selections[0] += 1
             state[2] = hp if selections[0] == 1 else .9
             farmer.last_target = TargetObservation(
@@ -129,7 +129,7 @@ def test_next_target_discards_player_or_npc_then_finds_monster(monkeypatch, kind
     controller.key.side_effect = key
     assert farmer.acquire() == .9
     assert [call.args[0] for call in controller.key.call_args_list] == [
-        farmer.config.next_target, "ESC", farmer.config.next_target]
+        farmer.config.next_target_near, "ESC", farmer.config.next_target]
     assert not farmer.unsafe_target_rejected
 
 
@@ -137,7 +137,7 @@ def test_next_target_discards_player_or_npc_then_finds_monster(monkeypatch, kind
 def test_direct_fight_and_skills_never_attack_player_panel(kind):
     farmer, controller, _, _ = harness(
         aggro_key="2", damage_keys=("F7",), overhit_keys=("F8",), vampiric_key="F9")
-    farmer.last_target = TargetObservation(at=0, kind=kind, player_class="Hawkeye", clan="PvP")
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind=kind, player_class="Hawkeye", clan="PvP")
     farmer.fight(.9)
     farmer.open_with_aggro()
     assert not farmer.use_damage_skill(.1, None)
@@ -170,7 +170,7 @@ def test_player_selected_during_fight_is_not_counted_as_dead_monster():
         original(name, duration, **kwargs)
         if name == farmer.config.attack:
             state[2] = None
-            farmer.last_target = TargetObservation(at=farmer.clock(), kind="player", player_class="Hawkeye")
+            farmer.last_target = TargetObservation(hp_bar_present=True, at=farmer.clock(), kind="player", player_class="Hawkeye")
 
     controller.key.side_effect = key
     farmer.fight(.9)
@@ -182,7 +182,7 @@ def test_player_selected_during_fight_is_not_counted_as_dead_monster():
 def test_duo_does_not_assist_rejected_player():
     duo, controller = make_duo(aggro_key="2", vampiric_key="F8")
     duo.support_pending = True
-    duo.last_target = TargetObservation(at=0, kind="player", player_class="Hawkeye")
+    duo.last_target = TargetObservation(hp_bar_present=True, at=0, kind="player", player_class="Hawkeye")
     assert not duo.combat_key(duo.config.attack, 100)
     duo.open_with_aggro()
     assert not duo.use_vampiric(.1, .9)
@@ -195,7 +195,7 @@ def test_duo_never_retaliates_against_player_even_when_ma_takes_damage():
     duo.resource_generation = controller.pause_generation
 
     def capture():
-        duo.last_target = TargetObservation(at=controller.now, kind="player", player_class="Hawkeye", clan="PvP")
+        duo.last_target = TargetObservation(hp_bar_present=True, at=controller.now, kind="player", player_class="Hawkeye", clan="PvP")
         return (.4, None, False)
 
     controller.capture = capture

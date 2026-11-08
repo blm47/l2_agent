@@ -13,28 +13,26 @@ def pending_assist(**settings):
     return duo, controller, target
 
 
-def test_normal_assist_waits_for_attack_and_measurable_target_hp_drop():
-    duo, controller, target = pending_assist()
+@pytest.mark.parametrize("fast", [False, True])
+def test_assist_starts_immediately_after_attack_without_target_hp_drop(fast):
+    duo, controller, target = pending_assist(experimental_fast_farm=fast)
+    assert (2, duo.config.support_key) not in controller.events
     duo.combat_key(duo.config.attack, 100)
-    assert (2, duo.config.support_key) not in controller.events
-    target[0] = .999
-    duo.observe()
-    assert (2, duo.config.support_key) not in controller.events
-    target[0] = .997
-    duo.observe()
     assert controller.events.count((2, duo.config.support_key)) == 1
-    assert controller.events.index((1, duo.config.attack)) < controller.events.index((2, duo.config.support_key))
+    assert not duo.support_attack_confirmed
+    assert controller.events.index((1, duo.config.attack)) < controller.events.index(("window", 2))
+    assert controller.events.index(("window", 2)) < controller.events.index((2, duo.config.support_key))
+    duo.observe()
+    duo.combat_key(duo.config.attack, 100)
+    assert controller.events.count((2, duo.config.support_key)) == 1
 
 
-def test_wounded_target_and_damage_before_ma_attack_do_not_allow_assist():
+def test_wounded_target_still_requires_ma_attack():
     duo, controller, target = pending_assist()
     target[0] = .3
     duo.observe()
     assert (2, duo.config.support_key) not in controller.events
     duo.combat_key(duo.config.attack, 100)
-    assert (2, duo.config.support_key) not in controller.events
-    target[0] = .29
-    duo.observe()
     assert controller.events.count((2, duo.config.support_key)) == 1
 
 
@@ -68,25 +66,19 @@ def test_new_target_or_pause_requires_new_attack_confirmation(change):
     duo.observe()
     assert controller.events.count((2, duo.config.support_key)) == 1
     duo.combat_key(duo.config.attack, 100)
-    assert controller.events.count((2, duo.config.support_key)) == 1
+    assert controller.events.count((2, duo.config.support_key)) == 2
     target[0] = .79
     duo.observe()
     assert controller.events.count((2, duo.config.support_key)) == 2
 
 
 @pytest.mark.parametrize("target_hp", [None, 0.])
-def test_unknown_or_dead_hp_does_not_count_as_attack_progress(target_hp):
+def test_unknown_or_dead_target_does_not_allow_assist_after_attack(target_hp):
     duo, controller, target = pending_assist()
-    duo.combat_key(duo.config.attack, 100)
     target[0] = target_hp
+    duo.combat_key(duo.config.attack, 100)
     duo.observe()
     assert (2, duo.config.support_key) not in controller.events
-    target[0] = .8
-    duo.observe()
-    assert (2, duo.config.support_key) not in controller.events
-    target[0] = .79
-    duo.observe()
-    assert controller.events.count((2, duo.config.support_key)) == 1
 
 
 def test_attack_flag_without_attack_command_does_not_allow_assist():
@@ -96,7 +88,7 @@ def test_attack_flag_without_attack_command_does_not_allow_assist():
     duo.observe()
     assert (2, duo.config.support_key) not in controller.events
     duo.combat_key(duo.config.attack, 100)
-    assert (2, duo.config.support_key) not in controller.events
+    assert controller.events.count((2, duo.config.support_key)) == 1
     target[0] = .79
     duo.observe()
     assert controller.events.count((2, duo.config.support_key)) == 1
@@ -126,7 +118,7 @@ def test_buff_button_matching_attack_does_not_count_as_ma_attack():
     duo.observe()
     assert (2, duo.config.support_key) not in controller.events
     duo.combat_key(duo.config.attack, 100)
-    assert (2, duo.config.support_key) not in controller.events
+    assert controller.events.count((2, duo.config.support_key)) == 1
     target[0] = .79
     duo.observe()
     assert controller.events.count((2, duo.config.support_key)) == 1

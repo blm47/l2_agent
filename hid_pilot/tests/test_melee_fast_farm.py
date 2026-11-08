@@ -81,8 +81,9 @@ def test_fast_overhit_ignores_training_and_average_but_requires_below_twenty_per
     ("npc", .9, 1, False), ("monster", 0., 1, False),
     ("monster", None, 1, False), ("monster", .9, 25, False),
 ])
-def test_fast_selection_checks_fresh_target_before_immediate_attack(monkeypatch, kind, hp, level, allowed):
-    farmer, controller, _, _ = harness(experimental_fast_farm=True)
+@pytest.mark.parametrize("delay", [0, .25, 1])
+def test_fast_selection_checks_fresh_target_before_immediate_attack(monkeypatch, kind, hp, level, allowed, delay):
+    farmer, controller, _, _ = harness(experimental_fast_farm=True, target_delay=delay)
     controller.pause_generation = 0
     farmer.profile = BarProfile(width=100, height=100)
     farmer.last_target = TargetObservation(at=0., kind="monster", hp=.05)
@@ -97,10 +98,10 @@ def test_fast_selection_checks_fresh_target_before_immediate_attack(monkeypatch,
     monkeypatch.setattr(Farmer, "observe", capture)
     farmer.switch_fast_target()
     keys = [call.args[0] for call in controller.key.call_args_list]
-    assert keys[0] == farmer.config.next_target
+    assert keys[0] == farmer.config.next_target_near
     assert (farmer.config.attack in keys) is allowed
     assert farmer.fast_target_ready is allowed
-    controller.wait.assert_not_called()
+    assert any(call.args == (.3,) for call in controller.wait.call_args_list)
 
 
 def test_fast_selection_does_not_attack_after_pause_during_capture(monkeypatch):
@@ -113,7 +114,7 @@ def test_fast_selection_does_not_attack_after_pause_during_capture(monkeypatch):
 
     monkeypatch.setattr(Farmer, "observe", capture)
     farmer.switch_fast_target()
-    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target]
+    assert [call.args[0] for call in controller.key.call_args_list] == [farmer.config.next_target_near]
     assert not farmer.fast_target_ready
 
 
@@ -144,15 +145,15 @@ def test_stop_after_next_target_prevents_fast_attack():
 def test_duo_fast_attack_precedes_assist_and_reuses_selected_target(monkeypatch):
     duo, controller, _ = observed_duo(monkeypatch, .9, experimental_fast_farm=True,
                                     support_self_heal_key=None)
-    controller.capture = lambda: (1., .9 if (1, duo.config.next_target) in controller.events else .06, False)
+    controller.capture = lambda: (1., .9 if (1, duo.config.next_target_near) in controller.events else .06, False)
     duo.fight(.9)
-    next_index = controller.events.index((1, duo.config.next_target))
+    next_index = controller.events.index((1, duo.config.next_target_near))
     assert controller.events[next_index + 1] == (1, duo.config.attack)
     assert duo.fast_target_ready
     assert duo.attacking
-    before = controller.events.count((1, duo.config.next_target))
+    before = controller.events.count((1, duo.config.next_target_near))
     assert duo.acquire() == .9
-    assert controller.events.count((1, duo.config.next_target)) == before
+    assert controller.events.count((1, duo.config.next_target_near)) == before
     assert (2, duo.config.support_key) in controller.events[next_index + 2:]
     assists = controller.events.count((2, duo.config.support_key))
     duo.fast_progress_at = controller.now
@@ -167,7 +168,7 @@ def test_duo_fast_attack_precedes_assist_and_reuses_selected_target(monkeypatch)
 def test_fast_carry_does_not_duplicate_opening_attack_after_mode_is_disabled(monkeypatch):
     duo, controller, _ = observed_duo(monkeypatch, .9, experimental_fast_farm=True,
                                     support_self_heal_key=None)
-    controller.capture = lambda: (1., .9 if (1, duo.config.next_target) in controller.events else .06, False)
+    controller.capture = lambda: (1., .9 if (1, duo.config.next_target_near) in controller.events else .06, False)
     duo.fight(.9)
     duo.config = duo.config.model_copy(update={"experimental_fast_farm": False})
     controller.capture = lambda: (1., 0., False)

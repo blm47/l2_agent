@@ -2,24 +2,31 @@ import logging
 import random
 import threading
 import time
-import win32api
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 import numpy as np
+import win32api
+import win32gui
 
 from hid_pilot.desktop import ActivationDenied, Desktop, FocusLost, Target, activate, snapshot
+from hid_pilot.keyboard_layout import ensure_english_layout
 from hid_pilot.mouse_path import mouse_path
 from hid_pilot.script import KEYS
 from hid_pilot.transport import PicoTransport
 from hid_pilot.window_activation import request_activation
-from hid_pilot.keyboard_layout import ensure_english_layout
 
 logger = logging.getLogger("hid_pilot.controller")
 
 
 class Stopped(Exception):
     pass
+
+
+class InvalidTargetNameError(ValueError):
+    """
+    Имя нельзя безопасно передать в игровой чат; ввод ещё не выполнялся.
+    """
 
 
 class ActionController:
@@ -194,6 +201,8 @@ class ActionController:
                 strategy = self.activation_strategies.get(route, "direct")
 
                 def fallback() -> None:
+                    if self._destination_focused(target):
+                        return
                     self.check()
                     if self.manual_paused.is_set():
                         raise Stopped("Переключение отменено ручной паузой")
@@ -210,6 +219,10 @@ class ActionController:
                         )
                         self.activation_strategies[route] = "foreground"
                     except RuntimeError as exc:
+                        if self._destination_focused(target):
+                            self.activation_strategies[route] = "foreground"
+                            logger.warning("Helper вернул ошибку, но фокус целевого окна подтверждён: %s", exc)
+                            return
                         # Отмена и уход пользователя из игры не являются поводом
                         # перехватывать фокус ещё раз.
                         self.check()
@@ -280,10 +293,26 @@ class ActionController:
         with self.lock:
             self.transport.release()
 
+    def _destination_focused(self, target: Target) -> bool:
+        """
+        Проверяет поздний результат переключения, не требуя фокуса прежнего окна.
+        """
+        if self.stopped.is_set() or not self.hard_stop_ready():
+            raise Stopped("Переключение остановлено")
+        if self.manual_paused.is_set():
+            raise Stopped("Переключение отменено ручной паузой")
+        if win32gui.GetForegroundWindow() != target.hwnd:
+            return False
+        # Проверка PID/геометрии обязательна даже при совпадении HWND.
+        Desktop(target).check()
+        return True
+
     def _recover_focus(self, target: Target, timeout: float) -> None:
         """
         Восстанавливает foreground без переоткрытия исправного COM/HID.
         """
+        if self._destination_focused(target):
+            return
         self.check()
         if self.manual_paused.is_set():
             raise Stopped("Восстановление фокуса отменено ручной паузой")
@@ -300,7 +329,10 @@ class ActionController:
                 lambda: self.hard_stop_ready() and not self.manual_paused.is_set(), timeout,
                 strategy="attached_focus",
             )
-        except RuntimeError:
+        except RuntimeError as exc:
+            if self._destination_focused(target):
+                logger.warning("Восстановление завершилось до ответа helper: %s", exc)
+                return
             if self.transport.supports_alt_tab is not True:
                 raise
             self._alt_tab_activate(target)
@@ -311,6 +343,8 @@ class ActionController:
         """
         Последний резерв: Alt+Tab в disarmed, RELEASE и проверка перед ARM.
         """
+        if self._destination_focused(target):
+            return
         self.check()
         self._ensure_alt_released()
         current = snapshot(target.hwnd)
@@ -365,8 +399,11 @@ class ActionController:
             raise
 
     def _begin_hold(self, kind: str, name: str, duration: int) -> None:
+        # Под общим lock фоновый watchdog не может обновить heartbeat за нас.
+        self.transport.heartbeat()
         self._ensure_alt_released()
         self.check()
+        self.transport.heartbeat()
         self.transport.hold(kind, name, duration)
 
     def wait(self, seconds: float) -> None:
@@ -568,7 +605,7 @@ class ActionController:
         if self.transport.protocol != "HID_PILOT_V4":
             raise ValueError("Выбор через чат требует прошивки HID_PILOT_V4")
         if not name or len(name) > 80 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '-" for char in name):
-            raise ValueError("Имя цели содержит неподдерживаемые символы")
+            raise InvalidTargetNameError("Имя цели содержит неподдерживаемые символы")
         self.key("ENTER", 80)
         self.wait(.15)
         self._hold("CHORD", "CTRL+A", 80)

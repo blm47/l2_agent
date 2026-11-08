@@ -3,6 +3,7 @@
 """
 
 from pathlib import Path
+from shutil import copy2
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
@@ -182,6 +183,17 @@ class DuoPanel(QScrollArea):
                     suffix = ".json" if selected_filter == "JSON (*.json)" else ".pilot"
                     target = target.with_name(target.name + suffix)
                 text = self.editor.toPlainText()
+                # При сохранении копии переносим разметку, сохраняя уже настроенные файлы.
+                if self.path is not None:
+                    source_base = self.base()
+                    target_base = target.parent / target.stem
+                    if source_base.resolve() != target_base.resolve() and source_base.is_dir():
+                        for source in source_base.rglob("*"):
+                            if source.is_file():
+                                destination = target_base / source.relative_to(source_base)
+                                if not destination.exists():
+                                    destination.parent.mkdir(parents=True, exist_ok=True)
+                                    copy2(source, destination)
                 if target.suffix.lower() == ".json":
                     target.write_text(config.model_dump_json(indent=2), encoding="utf-8")
                     self.select_script(target, config)

@@ -37,7 +37,7 @@ def test_both_loot_phases_use_configured_count_and_duration():
     controller.key.side_effect = key
     farmer.fight()
     assert [call.args for call in controller.key.call_args_list] == [
-        (farmer.config.next_target, 100), (farmer.config.loot, 150), (farmer.config.loot, 150),
+        (farmer.config.next_target_near, 100), (farmer.config.loot, 150), (farmer.config.loot, 150),
         (farmer.config.attack, 100), (farmer.config.loot, 150), (farmer.config.loot, 150)]
     assert all(call.kwargs == {"exact": True} for call in controller.key.call_args_list
                if call.args[0] == farmer.config.loot)
@@ -55,7 +55,7 @@ def test_default_autoloot_only_runs_after_confirmed_death():
     controller.key.side_effect = key
     farmer.fight()
     assert [call.args for call in controller.key.call_args_list] == [
-        (farmer.config.next_target, 100), (farmer.config.attack, 100), (farmer.config.loot, 50)]
+        (farmer.config.next_target_near, 100), (farmer.config.attack, 100), (farmer.config.loot, 50)]
 
 
 def test_disabling_autoloot_disables_both_phases():
@@ -111,7 +111,7 @@ def test_next_target_then_configured_loot_then_attack():
     controller.key.side_effect = key
     farmer.fight()
     assert [call.args for call in controller.key.call_args_list[:3]] == [
-        (farmer.config.next_target, 100), (farmer.config.loot, 50), (farmer.config.attack, 100)]
+        (farmer.config.next_target_near, 100), (farmer.config.loot, 50), (farmer.config.attack, 100)]
     assert farmer.training_kills == 1
 
 

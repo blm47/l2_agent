@@ -29,14 +29,20 @@ class Control:
         self.clock = clock
         self.armed = False
         self.active = False
+        self.mouse_buttons = 0
         self.deadline = 0.0
         self.heartbeat = 0.0
         self.sequence = -1
         self.buffer = bytearray()
         self.overflow = False
+        self.camera_delta = None
+        self.camera_done = False
         self.release()
 
     def release(self) -> None:
+        self.camera_delta = None
+        self.camera_done = False
+        self.mouse_buttons = 0
         # Обе попытки нужны даже при ошибке первого USB report.
         try:
             self.keyboard.send_report(bytes(8))
@@ -58,6 +64,14 @@ class Control:
             self.disarm()
         elif self.active and now >= self.deadline:
             self.release()
+        if self.camera_delta is not None and self.armed and self.mouse_buttons == 2:
+            # Один USB report за tick: основной цикл продолжает принимать HB/STOP.
+            dx, dy = self.camera_delta
+            sx, sy = max(-24, min(24, dx)), max(-24, min(24, dy))
+            self.mouse.send_report(bytes((2, sx & 255, sy & 255, 0)))
+            dx, dy = dx - sx, dy - sy
+            self.camera_delta = (dx, dy) if dx or dy else None
+            self.camera_done = self.camera_delta is None
 
     def command(self, line: bytes) -> bytes:
         sequence = -1
@@ -72,7 +86,7 @@ class Control:
             args = fields[2:]
             if name == "HELLO" and not args:
                 self.disarm()
-                result = "HID_PILOT_V5"
+                result = "HID_PILOT_V10"
             elif name == "STOP" and not args:
                 self.disarm()
                 result = "STOPPED"
@@ -95,11 +109,35 @@ class Control:
                 self.deadline = self.clock() + .08
                 self.keyboard.send_report(bytes((4, 0, 43, 0, 0, 0, 0, 0)))
                 result = "SENT"
-            elif name == "MOVE" and len(args) == 2 and self.armed and not self.active:
+            elif name == "WHEEL" and len(args) == 1 and self.armed and not self.active:
+                amount = int(args[0])
+                if not -4 <= amount <= 4 or amount == 0:
+                    raise ValueError("WHEEL")
+                self.mouse.send_report(bytes((0, 0, 0, amount & 255)))
+                result = "SCROLLED"
+            elif name == "CAMERA" and len(args) == 2 and self.armed and self.mouse_buttons == 2:
                 dx, dy = int(args[0]), int(args[1])
-                if not -16 <= dx <= 16 or not -16 <= dy <= 16:
+                if (dx == 0) == (dy == 0) or abs(dx) > 900 or abs(dy) > 900:
+                    raise ValueError("CAMERA")
+                if self.camera_delta is not None:
+                    raise ValueError("CAMERA_BUSY")
+                self.camera_delta = (dx, dy)
+                self.camera_done = False
+                result = "MOVING"
+            elif name == "CAMERA_STATUS" and not args and self.armed and self.mouse_buttons == 2:
+                if self.camera_delta is None and not self.camera_done:
+                    raise ValueError("CAMERA_CANCELLED")
+                result = "DONE" if self.camera_done else "MOVING"
+            elif name == "MOVE" and len(args) == 2 and self.armed and (
+                not self.active or self.mouse_buttons == 2
+            ):
+                dx, dy = int(args[0]), int(args[1])
+                # Ускоренная камера разрешена только с ПКМ; обычное наведение не меняется.
+                limit = 120 if self.mouse_buttons == 2 else 16
+                if not -limit <= dx <= limit or not -limit <= dy <= limit:
                     raise ValueError("MOVE")
-                self.mouse.send_report(bytes((0, dx & 255, dy & 255, 0)))
+                # ПКМ сохраняется в каждом report; MOVE не продлевает deadline удержания.
+                self.mouse.send_report(bytes((self.mouse_buttons, dx & 255, dy & 255, 0)))
                 result = "MOVED"
             elif name in ("KEY", "BUTTON", "CHORD") and len(args) == 2 and self.armed:
                 duration = int(args[1])
@@ -128,6 +166,7 @@ class Control:
                 # Учёт начинается до USB-вызова, чтобы ошибка не скрыла удержание.
                 self.active = True
                 self.deadline = self.clock() + duration / 1000
+                self.mouse_buttons = report[0] if name == "BUTTON" else 0
                 # Перед любым нажатием явно отпускаем все модификаторы, включая ALT.
                 self.keyboard.send_report(bytes(8))
                 device.send_report(report)

@@ -48,6 +48,7 @@ class TargetObservation(BaseModel):
     player_class: str | None = None
     clan: str | None = None
     hp: float | None = Field(default=None, ge=0, le=1)
+    hp_bar_present: bool | None = None
     dead: bool | None = None
     death_marker: bool = False
     confidence: float = Field(default=0, ge=0, le=1)
@@ -142,7 +143,8 @@ class TargetReader:
             if numeric_hp is not None:
                 hp = numeric_hp.fraction
                 strip_present = True
-        values: dict = {"at": at, "hp": hp, "death_marker": marker, "dead": self.death(hp, marker),
+        values: dict = {"at": at, "hp": hp, "hp_bar_present": strip_present,
+                        "death_marker": marker, "dead": self.death(hp, marker),
                         "level": self.profile.read_level(image, "target_level", reader)}
         # Имя произвольное: не используем список названий мобов как основной детектор.
         if names and names[0][2] >= .9:

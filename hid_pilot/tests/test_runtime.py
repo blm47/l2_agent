@@ -19,6 +19,54 @@ def test_stop_blocks_later_input():
     transport.hold.assert_not_called()
 
 
+def test_key_preparation_keeps_firmware_heartbeat_alive_under_controller_lock(monkeypatch):
+    from test_firmware import board_module
+
+    now = [0.]
+    board = board_module.Control(Mock(), Mock(), lambda: now[0])
+    board.command(b"1 ARM")
+    sequence = [1]
+    heartbeat_at = [0.]
+
+    def command(text, expected):
+        sequence[0] += 1
+        reply = board.command(f"{sequence[0]} {text}".encode())
+        assert reply == f"{sequence[0]} OK {expected}\n".encode()
+
+    def heartbeat():
+        if now[0] - heartbeat_at[0] >= .1:
+            command("HB", "ALIVE")
+            heartbeat_at[0] = now[0]
+
+    def release():
+        command("RELEASE", "RELEASED")
+        now[0] += .06
+
+    desktop, transport = Mock(), Mock()
+    desktop.check.side_effect = lambda: now.__setitem__(0, now[0] + .12)
+    transport.release.side_effect = release
+    transport.heartbeat.side_effect = heartbeat
+    transport.hold.side_effect = lambda kind, name, duration: command(f"{kind} {name} {duration}", "SENT")
+    controller = ActionController(desktop, transport, lambda: True)
+    monkeypatch.setattr("hid_pilot.controller.win32api.GetAsyncKeyState", lambda _: 0)
+    now[0] = .2
+    with controller.lock:
+        controller._begin_hold("KEY", "5", 120)
+    assert now[0] > .35
+    assert board.armed and board.active
+    transport.hold.assert_called_once_with("KEY", "5", 120)
+
+
+def test_heartbeat_failure_never_rearms_or_sends_key(monkeypatch):
+    transport = Mock()
+    transport.heartbeat.side_effect = OSError("Heartbeat истёк")
+    controller = ActionController(Mock(), transport, lambda: True)
+    with pytest.raises(OSError, match="Heartbeat истёк"):
+        controller._begin_hold("KEY", "5", 120)
+    transport.arm.assert_not_called()
+    transport.hold.assert_not_called()
+
+
 def test_one_second_key_hold_is_not_randomized_by_humanize(monkeypatch):
     transport = Mock(protocol="HID_PILOT_V4")
     controller = ActionController(Mock(), transport, lambda: True)

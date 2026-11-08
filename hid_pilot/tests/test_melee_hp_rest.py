@@ -128,7 +128,7 @@ def test_acquire_checks_health_before_next_target():
     farmer.recover = Mock(side_effect=recover)
     assert farmer.acquire() == 1.
     farmer.recover.assert_called_once_with()
-    assert controller.key.call_args_list[0].args[0] == farmer.config.next_target
+    assert controller.key.call_args_list[0].args[0] == farmer.config.next_target_near
 
 
 def test_attack_during_rest_stands_then_selects_next_target_without_recursive_rest():
@@ -154,5 +154,5 @@ def test_attack_during_rest_stands_then_selects_next_target_without_recursive_re
     farmer.fight = Mock(side_effect=fight)
     farmer.recover()
     farmer.fight.assert_called_once_with()
-    assert [call.args[0] for call in controller.key.call_args_list] == ["=", farmer.config.next_target]
+    assert [call.args[0] for call in controller.key.call_args_list] == ["=", farmer.config.next_target_near]
     assert not farmer.in_recovery

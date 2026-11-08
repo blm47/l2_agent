@@ -2,7 +2,8 @@
 # Макрос 2 выбирает себя и лечит; после лечения цель выбирается заново.
 # Случайное W/A/S/D между боями раз в 30–60 секунд на 1–2 секунды; нужна V4.
 set random_movement true
-set next_target 6
+set next_target "6"
+set next_target_near "7"
 set attack F
 set melee F
 set loot C
@@ -15,7 +16,7 @@ set mp_threshold 0.10
 set mp_resume 0.90
 set attack_delay 1
 set heal_delay 2
-set target_delay 0.7
+set target_delay 0.25
 set approach_delay 4
 set loot_delay 0.7
 set loot_attempts 3

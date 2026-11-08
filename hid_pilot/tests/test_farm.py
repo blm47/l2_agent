@@ -34,7 +34,7 @@ def test_attack_then_melee_and_optional_loot():
         controller.key.side_effect = press
         farm.run()
         keys = [call.args[0] for call in controller.key.call_args_list]
-        assert keys == ["3", "R", "4"] + (["5", "5"] if pickup else [])
+        assert keys == ["7", "R", "4"] + (["5", "5"] if pickup else [])
 
 
 def test_heal_forces_reacquisition_before_more_attack():
@@ -224,7 +224,7 @@ def test_confirmed_zero_after_attack_proceeds_to_loot_without_melee():
     farm, controller, state = harness(loot_attempts=2)
     controller.key.side_effect = lambda key, ms: state.update(target=0.) if key == "R" else None
     farm.run()
-    assert [call.args[0] for call in controller.key.call_args_list] == ["3", "R", "5", "5"]
+    assert [call.args[0] for call in controller.key.call_args_list] == ["7", "R", "5", "5"]
 
 
 def test_already_dead_target_is_not_farmed_again():
@@ -232,7 +232,7 @@ def test_already_dead_target_is_not_farmed_again():
     state["target"] = 0.
     with pytest.raises(RuntimeError, match="HP цели не найдено"):
         farm.run()
-    assert [call.args[0] for call in controller.key.call_args_list] == ["3", "3"]
+    assert [call.args[0] for call in controller.key.call_args_list] == ["7", "6"] * 2
 
 
 def test_stuck_target_triggers_melee_then_resumes_attacks():
@@ -248,7 +248,7 @@ def test_stuck_target_triggers_melee_then_resumes_attacks():
     controller.key.side_effect = press
     farm.run()
     keys = [call.args[0] for call in controller.key.call_args_list]
-    assert keys == ["3", "R", "R", "4", "R"]
+    assert keys == ["7", "R", "R", "4", "R"]
 
 
 def test_unreachable_target_has_bounded_reposition_attempts():
@@ -343,7 +343,7 @@ def test_low_mp_finishes_mob_before_rest():
     controller.wait.side_effect = wait
     farm.run()
     keys = [call.args[0] for call in controller.key.call_args_list]
-    assert keys == ["3", "4", "I", "I"]
+    assert keys == ["7", "4", "I", "I"]
 
 
 def test_lost_target_after_heal_does_not_allow_rest():

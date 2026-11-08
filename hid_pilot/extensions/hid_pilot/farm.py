@@ -68,7 +68,8 @@ class FarmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     humanize: bool = True
     random_movement: bool = False
-    next_target: str = "3"
+    next_target: str = "6"
+    next_target_near: str = "7"
     attack: str = "R"
     melee: str = "4"
     loot: str = "5"
@@ -81,7 +82,7 @@ class FarmConfig(BaseModel):
     mp_resume: float = Field(default=.90, gt=0, le=1)
     attack_delay: float = Field(default=1.5, ge=.2, le=30)
     heal_delay: float = Field(default=2, ge=.2, le=30)
-    target_delay: float = Field(default=.7, ge=.2, le=10)
+    target_delay: float = Field(default=.25, ge=0, le=1)
     approach_delay: float = Field(default=4, ge=.2, le=30)
     loot_delay: float = Field(default=.7, ge=.2, le=10)
     loot_attempts: int = Field(default=3, ge=1, le=20)
@@ -115,7 +116,7 @@ class FarmConfig(BaseModel):
             values["max_hours"] = float(values["max_seconds"]) / 3600
         return values
 
-    @field_validator("next_target", "attack", "melee", "loot", "heal", "rest")
+    @field_validator("next_target_near", "next_target", "attack", "melee", "loot", "heal", "rest")
     @classmethod
     def allowed(cls, value: str) -> str:
         if value not in KEYS:
@@ -135,7 +136,7 @@ class Farmer:
         self.controller = controller
         self.controller.humanize = config.humanize
         if controller.transport.protocol == "L2_PICO_V1" and "=" in (
-            config.next_target, config.attack, config.melee, config.loot, config.heal, config.rest
+            config.next_target_near, config.next_target, config.attack, config.melee, config.loot, config.heal, config.rest
         ):
             raise RuntimeError("Фарм с клавишей = требует прошивки HID_PILOT_V1; ввод не начат")
         self.profile = profile
@@ -572,9 +573,12 @@ class Farmer:
     def fight(self) -> None:
         target = None
         for _ in range(self.config.target_attempts):
-            self.press(self.config.next_target)
-            self.guarded_wait(self.config.target_delay)
-            _, _, target = self.observe()
+            for key in (self.config.next_target_near, self.config.next_target):
+                self.press(key)
+                self.guarded_wait(self.config.target_delay)
+                _, _, target = self.observe()
+                if target is not None and target > 0:
+                    break
             if target is not None and target > 0:
                 break
         if target is None or target == 0:

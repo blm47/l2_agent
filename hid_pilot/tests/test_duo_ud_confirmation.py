@@ -134,7 +134,7 @@ def test_fast_target_capture_confirms_ud_before_opening_attack():
                                experimental_fast_farm=True)
     controller.frames = iter([(.174, .9, False), (.061, .9, False)])
     duo.switch_fast_target()
-    assert controller.events == [(1, duo.config.next_target), (1, "F6"), (1, duo.config.attack)]
+    assert controller.events == [(1, duo.config.next_target_near), (1, "F6"), (1, duo.config.attack)]
 
 
 def test_after_one_second_ud_hold_returned_state_uses_post_hold_capture():

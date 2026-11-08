@@ -9,7 +9,7 @@ from hid_pilot.target import TargetObservation
 
 
 def monster(farmer, name="Gremlin", level=1):
-    farmer.last_target = TargetObservation(at=farmer.clock(), kind="monster", name=name,
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=farmer.clock(), kind="monster", name=name,
                                            level=level, confidence=.95)
 
 
@@ -20,13 +20,14 @@ def fight_sequence(farmer, values):
 
 
 def test_three_kills_calibrate_normal_damage_then_overhit_finishes():
-    farmer, controller, _, _ = harness(overhit_keys="F3,F4", pickup_loot=False)
+    farmer, controller, _, _ = harness(pickup_loot=False)
     monster(farmer)
     for _ in range(3):
         fight_sequence(farmer, [.8, .6, .4, .2, 0., 0.])
     assert farmer.training_kills == 3
     assert farmer.average_damage(("Gremlin", 1)) == pytest.approx(.2)
     assert [call.args[0] for call in controller.key.call_args_list] == ["R"] * 3
+    farmer.config = farmer.config.model_copy(update={"overhit_keys": ("F3", "F4")})
     fight_sequence(farmer, [.8, .6, .4, .22, 0., 0.])
     assert [call.args[0] for call in controller.key.call_args_list][-2:] == ["R", "F3"]
     assert farmer.average_damage(("Gremlin", 1)) == pytest.approx((12 * .2 + .2 + .2 + .2 + .18) / 16)

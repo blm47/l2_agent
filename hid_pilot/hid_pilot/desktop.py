@@ -122,7 +122,8 @@ class Desktop:
         width, height = right - left, bottom - top
         if width * height > 16_000_000:
             raise ValueError("Клиентская область слишком большая для capture")
-        handle = win32gui.GetDC(0)
+        # Собственный display DC допускает DeleteDC и не требует отсутствующего PyCDC.Detach.
+        handle = win32gui.CreateDC("DISPLAY", None, None)
         source = destination = bitmap = None
         try:
             source = win32ui.CreateDCFromHandle(handle)
@@ -134,13 +135,18 @@ class Desktop:
             pixels = np.frombuffer(bitmap.GetBitmapBits(True), dtype=np.uint8)
             image = pixels.reshape(height, width, 4)[:, :, :3].copy()
         finally:
-            if destination is not None:
-                destination.DeleteDC()
-            if source is not None:
-                source.DeleteDC()
-            if bitmap is not None:
-                win32gui.DeleteObject(bitmap.GetHandle())
-            win32gui.ReleaseDC(0, handle)
+            # Каждый DC создан этим capture; сбой одной очистки не пропускает остальные.
+            for cleanup in (
+                destination.DeleteDC if destination is not None else None,
+                source.DeleteDC if source is not None else lambda: win32gui.DeleteDC(handle),
+                (lambda: win32gui.DeleteObject(bitmap.GetHandle())) if bitmap is not None else None,
+            ):
+                if cleanup is not None:
+                    try:
+                        cleanup()
+                    except Exception:
+                        logging.getLogger("hid_pilot.desktop").warning(
+                            "Ошибка освобождения GDI-ресурса capture", exc_info=True)
         self.check()
         return image
 

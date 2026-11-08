@@ -1,6 +1,9 @@
+set stuck_timeout 10.0
 # Фарм мили-воином. Нужна прошивка HID_PILOT_V4 и английская раскладка.
 # Перед запуском настройте свои статы, HP цели и панель имени монстра.
-set next_target 6
+set next_target "6"
+set next_target_near "7"
+set target_delay 0.25
 set attack 3
 # Повтор кнопки атаки по живой цели каждые 1,5 секунды.
 set attack_delay 1.2
@@ -13,13 +16,13 @@ set hp_elixir_cooldown 300
 set rest =
 set stand -
 # Сесть на реген при низком HP/MP: включается только явно.
-set regen_enabled false
+set regen_enabled true
 # Дополнительный подбор перед атакой выбранной цели.
-set loot_before_farm false
+set loot_before_farm true
 set humanize true
 set approach_delay 11
 set target_verify_seconds 2
-set target_max_hp_multiplier 10
+set target_max_hp_multiplier 7.0
 set quiet_seconds 2.5
 set loot_attempts 1
 set loot_hold 0.05

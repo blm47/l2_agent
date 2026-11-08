@@ -35,7 +35,7 @@ def test_chat_skips_failed_and_temporarily_blocked_names():
 
 def test_next_target_skips_blocked_monster_until_cooldown_expires():
     farmer, controller, now, state = harness()
-    farmer.last_target = TargetObservation(at=0, kind="monster", name="Gremlin", confidence=.99)
+    farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind="monster", name="Gremlin", confidence=.99)
     farmer.unreachable_until["Gremlin"] = 60
     farmer.invalidate_target = Mock()
     with pytest.raises(RuntimeError, match="/target"):
@@ -54,7 +54,7 @@ def test_first_live_chat_target_stops_all_remaining_names(identity):
     def select(name):
         state[2] = .8
         farmer.last_target = (None if identity is None else
-                              TargetObservation(at=0, kind=identity, name=None, confidence=0))
+                              TargetObservation(hp_bar_present=True, at=0, kind=identity, name=None, confidence=0))
 
     controller.target_by_name.side_effect = select
     assert farmer.acquire() == .8
@@ -69,7 +69,7 @@ def test_chat_acquisition_approaches_immediately_after_first_live_target():
 
     def select(name):
         state[2] = .8
-        farmer.last_target = TargetObservation(at=0, kind="monster", name="OCR pending", confidence=.3)
+        farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind="monster", name="OCR pending", confidence=.3)
 
     controller.target_by_name.side_effect = select
     target = farmer.acquire()
@@ -88,7 +88,7 @@ def test_chat_does_not_accept_known_player_or_npc(kind):
 
     def select(name):
         state[2] = 1.
-        farmer.last_target = TargetObservation(at=0, kind=kind, name=name, confidence=.99)
+        farmer.last_target = TargetObservation(hp_bar_present=True, at=0, kind=kind, name=name, confidence=.99)
 
     controller.target_by_name.side_effect = select
     with pytest.raises(RuntimeError, match="/target"):
