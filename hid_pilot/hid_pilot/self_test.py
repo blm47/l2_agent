@@ -7,9 +7,33 @@ import json
 import logging
 import os
 import sys
+import time
+from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 from pathlib import Path
 
 logger = logging.getLogger("hid_pilot.self_test")
+
+
+def check_observation_start(base: Path) -> None:
+    """
+    Проверяет подготовку обычного START и ДебагСтарт без контроллера игрового ввода.
+    """
+    from hid_pilot.bars import BarProfile
+    from hid_pilot.farm import FarmConfig, Farmer
+
+    for debug in (False, True):
+        controller = SimpleNamespace(transport=SimpleNamespace(protocol="HID_PILOT_V4"),
+                                     pause_generation=0, debug_capture=debug,
+                                     active_time=time.monotonic)
+        farmer = Farmer(controller, BarProfile(width=100, height=100),
+                        FarmConfig(rest="="), lambda message: logger.info("%s", message))
+        try:
+            farmer.setup_observation(base)
+            if farmer.identity_cache is None or (farmer.debug_recorder is not None) != debug:
+                raise RuntimeError("Подготовка наблюдения START не подтверждена")
+        finally:
+            farmer.close_observation()
 
 
 def run_self_test(arguments: list[str]) -> int:
@@ -56,6 +80,9 @@ def run_self_test(arguments: list[str]) -> int:
             else:
                 parse_script(text)
         checks["scripts"] = "Внешние расширения и сценарии доступны вне EXE"
+        with TemporaryDirectory(prefix="hid-pilot-self-test-") as directory:
+            check_observation_start(Path(directory))
+        checks["observation_start"] = "START и ДебагСтарт: подготовка наблюдения без Pico и игрового ввода"
         reader = NumbersReader()
         image = np.full((60, 280, 3), 20, dtype=np.uint8)
         cv2.putText(image, "148/148", (10, 43), cv2.FONT_HERSHEY_SIMPLEX, 1.3,

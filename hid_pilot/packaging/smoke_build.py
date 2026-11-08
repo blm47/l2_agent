@@ -48,6 +48,8 @@ def main() -> int:
         result = json.loads(report.read_text("utf-8"))
         if not result["ok"] or not result["frozen"]:
             raise RuntimeError(f"EXE {kind} не является проверенной автономной сборкой: {result}")
+        if "observation_start" not in result.get("checks", {}):
+            raise RuntimeError(f"EXE {kind} не проверил подготовку наблюдения START")
         reports[kind] = result
     (destination / "result.json").write_text(json.dumps(reports, ensure_ascii=False, indent=2), "utf-8")
     return 0

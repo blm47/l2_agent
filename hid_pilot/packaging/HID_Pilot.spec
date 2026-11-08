@@ -24,6 +24,7 @@ analysis = Analysis(
     hiddenimports=ocr_hidden + ort_hidden + [
         "serial.tools.list_ports_windows", "hid_pilot.monster_catalogue",
         "hid_pilot.resurrection", "hid_pilot.system_chat", "hid_pilot.party_class",
+        "hid_pilot.observation_debug",
     ],
     hookspath=[],
     runtime_hooks=[],
